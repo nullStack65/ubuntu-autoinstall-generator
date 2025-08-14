@@ -108,16 +108,15 @@ xorriso -as mkisofs \
   -o "$DESTINATION" \
   -J -l \
   -isohybrid-gpt-basdat \
-  -isohybrid-apm-hfsplus \
   -partition_offset 16 \
-  --grub2-mbr "$WORK_DIR/edit/boot/grub/i386-pc/boot_hybrid.img" \
-  -append_partition 2 0xef "$WORK_DIR/edit/boot/grub/efi.img" \
-  -appended_part_as_gpt \
+  --grub2-mbr "$WORK_DIR/edit/boot/grub/i386-pc/eltorito.img" \
   -eltorito-boot boot/grub/i386-pc/eltorito.img \
        -no-emul-boot -boot-load-size 4 -boot-info-table \
   -eltorito-catalog boot/grub/boot.cat \
   -eltorito-alt-boot \
-  -e --interval:appended_partition_2:: \
+  -e boot/grub/efi.img \
        -no-emul-boot \
+  -isohybrid-apm-hfsplus \
   "$WORK_DIR/edit"
+
 echo "[GENERATOR] Done! ISO saved as $DESTINATION"
