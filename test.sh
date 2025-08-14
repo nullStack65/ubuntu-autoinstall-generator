@@ -32,6 +32,20 @@ trap cleanup EXIT
 # --- Main Test Loop ---
 echo -e "${GREEN}[TEST.SH]${NC} Starting automated test loop for Python autoinstall-generator..."
 
+# 0. Run debug script first to analyze ISO structure
+echo -e "${GREEN}[TEST.SH]${NC} 0. Analyzing source ISO boot structure with debug script..."
+if [[ -f "./ubuntu-autoinstall-generator/iso_debug.sh" ]]; then
+    chmod +x "./ubuntu-autoinstall-generator/iso_debug.sh"
+    echo -e "${BLUE}[DEBUG]${NC} Running ISO structure analysis..."
+    "./ubuntu-autoinstall-generator/iso_debug.sh"
+    echo -e "${BLUE}[DEBUG]${NC} Debug analysis complete."
+    echo ""
+    echo -e "${YELLOW}[TEST.SH]${NC} Press Enter to continue with the main test, or Ctrl+C to exit..."
+    read -r
+else
+    echo -e "${YELLOW}[TEST.SH]${NC} Debug script not found, skipping structure analysis"
+fi
+
 # 1. Clean up previous runs and ensure the generator script is ready
 echo -e "${GREEN}[TEST.SH]${NC} 1. Cleaning up and preparing the generator script..."
 rm -rf ubuntu-autoinstall-generator

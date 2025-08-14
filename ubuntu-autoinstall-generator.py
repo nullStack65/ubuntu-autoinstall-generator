@@ -1,120 +1,390 @@
-#!/bin/bash
+#!/usr/bin/env python3
+"""
+Ubuntu Autoinstall ISO Builder - Python Version
+Creates a modified Ubuntu Server ISO with autoinstall parameters injected into boot configs.
+"""
 
-# Debug script to examine Ubuntu 22.04 ISO boot structure
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Optional, List, Tuple
+import logging
 
-ISO_SOURCE="/var/lib/vz/template/iso/ubuntu-22.04.4-live-server-amd64.iso"
-MOUNT_POINT="/mnt/iso_debug"
-WORK_DIR="./iso_debug_work"
-
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-cleanup() {
-    echo -e "${GREEN}[DEBUG]${NC} Cleaning up..."
-    if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
-        umount "$MOUNT_POINT"
-    fi
-    if [[ -d "$MOUNT_POINT" ]]; then
-        rmdir "$MOUNT_POINT"
-    fi
-    rm -rf "$WORK_DIR"
-}
-
-trap cleanup EXIT
-
-echo -e "${GREEN}[DEBUG]${NC} Analyzing Ubuntu 22.04 ISO boot structure..."
-
-# 1. Mount the original ISO
-echo -e "${GREEN}[DEBUG]${NC} 1. Mounting original ISO..."
-mkdir -p "$MOUNT_POINT"
-if ! mount -o loop,ro "$ISO_SOURCE" "$MOUNT_POINT"; then
-    echo -e "${GREEN}[DEBUG]${NC} Failed to mount ISO"
-    exit 1
-fi
-
-# 2. Extract boot information using xorriso
-echo -e "${GREEN}[DEBUG]${NC} 2. Extracting boot information..."
-mkdir -p "$WORK_DIR"
-
-echo -e "${BLUE}--- xorriso boot info ---${NC}"
-xorriso -indev "$ISO_SOURCE" -report_about NOTE 2>&1 | grep -E "(Boot record|Volume|El-Torito|EFI)"
-
-echo -e "${BLUE}--- xorriso detailed boot analysis ---${NC}"
-xorriso -indev "$ISO_SOURCE" -report_el_torito as_mkisofs 2>&1 | head -20
-
-# 3. Look for all boot-related files
-echo -e "${GREEN}[DEBUG]${NC} 3. Searching for boot files..."
-
-echo -e "${BLUE}--- Boot directories and files ---${NC}"
-find "$MOUNT_POINT" -type d -name "*boot*" -o -name "*grub*" -o -name "*efi*" -o -name "*isolinux*" 2>/dev/null | sort
-
-echo -e "${BLUE}--- All .img files ---${NC}"
-find "$MOUNT_POINT" -name "*.img" 2>/dev/null
-
-echo -e "${BLUE}--- All .bin files ---${NC}"
-find "$MOUNT_POINT" -name "*.bin" 2>/dev/null
-
-echo -e "${BLUE}--- All boot config files ---${NC}"
-find "$MOUNT_POINT" -name "*.cfg" 2>/dev/null
-
-# 4. Check specific Ubuntu 22.04 boot locations
-echo -e "${GREEN}[DEBUG]${NC} 4. Checking specific locations..."
-
-locations=(
-    "boot/grub/efi.img"
-    "boot/grub/bios.img"  
-    "EFI/boot/bootx64.efi"
-    "EFI/ubuntu/grubx64.efi"
-    "boot/grub/grub.cfg"
-    "boot/grub/loopback.cfg"
-    "isolinux/isolinux.bin"
-    "isolinux/isolinux.cfg"
-    "casper/vmlinuz"
-    "casper/initrd"
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    datefmt='%H:%M:%S'
 )
+logger = logging.getLogger(__name__)
 
-for loc in "${locations[@]}"; do
-    if [[ -f "$MOUNT_POINT/$loc" ]]; then
-        size=$(stat -c%s "$MOUNT_POINT/$loc")
-        echo -e "${GREEN}[DEBUG]${NC} ✓ Found: $loc (${size} bytes)"
-    else
-        echo -e "${YELLOW}[DEBUG]${NC} ✗ Missing: $loc"
-    fi
-done
 
-# 5. Check directory structure
-echo -e "${GREEN}[DEBUG]${NC} 5. Top-level directory structure..."
-ls -la "$MOUNT_POINT/"
+class UbuntuISOBuilder:
+    def __init__(self, source_iso: Path, output_iso: Optional[Path] = None,
+                 http_ip: str = "10.0.2.2", http_port: int = 8080):
+        self.source_iso = Path(source_iso)
+        self.output_iso = Path(output_iso) if output_iso else Path(f"{self.source_iso.stem}-autoinstall.iso")
+        self.http_ip = http_ip
+        self.http_port = http_port
+        self.work_dir = None
+        self.iso_dir = None
+        
+        # Autoinstall parameters
+        self.autoinstall_params = f"autoinstall ds=nocloud-net;s=http://{http_ip}:{http_port}/"
+        
+        # Boot configuration patterns
+        self.grub_patterns = [
+            # Standard kernel patterns
+            (r'(linux\s+/casper/(?:hwe-)?vmlinuz)(\s+---\s+|\s*$)', 
+             rf'\1 {self.autoinstall_params}\2'),
+            # EFI kernel patterns  
+            (r'(linuxefi\s+/casper/(?:hwe-)?vmlinuz)(\s+---\s+|\s*$)', 
+             rf'\1 {self.autoinstall_params}\2'),
+        ]
+        
+        self.isolinux_pattern = (r'(append\s+)', rf'\1{self.autoinstall_params} ')
 
-echo -e "${GREEN}[DEBUG]${NC} 6. Boot directory contents..."
-if [[ -d "$MOUNT_POINT/boot" ]]; then
-    find "$MOUNT_POINT/boot" -type f | head -20
-else
-    echo -e "${YELLOW}[DEBUG]${NC} No /boot directory found"
-fi
+    def __enter__(self):
+        self.work_dir = Path(tempfile.mkdtemp(prefix="ubuntu_iso_"))
+        self.iso_dir = self.work_dir / "iso"
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.work_dir and self.work_dir.exists():
+            shutil.rmtree(self.work_dir)
 
-echo -e "${GREEN}[DEBUG]${NC} 7. EFI directory contents..."
-if [[ -d "$MOUNT_POINT/EFI" ]]; then
-    find "$MOUNT_POINT/EFI" -type f | head -20
-else
-    echo -e "${YELLOW}[DEBUG]${NC} No /EFI directory found"
-fi
+    def check_dependencies(self) -> None:
+        """Check if required tools are available."""
+        required = ['xorriso']
+        missing = []
+        
+        for tool in required:
+            if not shutil.which(tool):
+                missing.append(tool)
+                
+        if missing:
+            raise RuntimeError(f"Missing required tools: {', '.join(missing)}")
 
-# 6. Extract to work directory and check file permissions
-echo -e "${GREEN}[DEBUG]${NC} 8. Extracting sample files for analysis..."
-mkdir -p "$WORK_DIR/sample"
+    def validate_iso(self) -> Tuple[str, str]:
+        """Validate source ISO and detect version/format."""
+        if not self.source_iso.exists():
+            raise FileNotFoundError(f"Source ISO not found: {self.source_iso}")
+            
+        # Extract version info
+        version = "Unknown"
+        try:
+            result = subprocess.run([
+                'xorriso', '-osirrox', 'on', '-indev', str(self.source_iso),
+                '-extract', '/.disk/info', str(self.work_dir / 'info.txt')
+            ], capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                info_file = self.work_dir / 'info.txt'
+                if info_file.exists():
+                    content = info_file.read_text()
+                    match = re.search(r'(\d{2}\.\d{2})', content)
+                    if match:
+                        version = match.group(1)
+        except subprocess.TimeoutExpired:
+            logger.warning("Version detection timed out")
+        except Exception as e:
+            logger.warning(f"Could not detect version: {e}")
+            
+        # Detect format by listing files
+        iso_format = "Unknown"
+        try:
+            result = subprocess.run([
+                'xorriso', '-indev', str(self.source_iso), '-find', '/', '-type', 'f'
+            ], capture_output=True, text=True, timeout=60)
+            
+            if result.returncode == 0:
+                files = result.stdout
+                if 'casper/vmlinuz' in files:
+                    iso_format = "Live Server"
+                elif 'boot/grub' in files:
+                    iso_format = "GRUB EFI"
+                elif '1-Boot-NoEmul.img' in files:
+                    iso_format = "Legacy Boot"
+        except subprocess.TimeoutExpired:
+            logger.warning("Format detection timed out")
+        except Exception as e:
+            logger.warning(f"Could not detect format: {e}")
+            
+        logger.info(f"Detected Ubuntu version: {version}")
+        logger.info(f"Detected ISO format: {iso_format}")
+        return version, iso_format
 
-# Try to copy some key files
-if [[ -f "$MOUNT_POINT/boot/grub/grub.cfg" ]]; then
-    cp "$MOUNT_POINT/boot/grub/grub.cfg" "$WORK_DIR/sample/" 2>/dev/null
-fi
+    def extract_iso(self) -> None:
+        """Extract ISO contents to working directory."""
+        logger.info("Extracting ISO contents...")
+        self.iso_dir.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            result = subprocess.run([
+                'xorriso', '-osirrox', 'on', '-indev', str(self.source_iso),
+                '-extract', '/', str(self.iso_dir)
+            ], capture_output=True, text=True, timeout=300)
+            
+            if result.returncode != 0:
+                raise RuntimeError(f"ISO extraction failed: {result.stderr}")
+                
+            # Make files writable
+            for root, dirs, files in os.walk(self.iso_dir):
+                for d in dirs:
+                    os.chmod(os.path.join(root, d), 0o755)
+                for f in files:
+                    os.chmod(os.path.join(root, f), 0o644)
+                    
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("ISO extraction timed out")
 
-if [[ -d "$MOUNT_POINT/boot" ]]; then
-    # Check what boot files actually exist
-    echo -e "${BLUE}--- All files in /boot ---${NC}"
-    find "$MOUNT_POINT/boot" -type f -exec ls -la {} \; | head -20
-fi
+    def modify_file_with_patterns(self, file_path: Path, patterns: List[Tuple[str, str]]) -> bool:
+        """Modify a file using regex patterns."""
+        if not file_path.exists():
+            return False
+            
+        try:
+            content = file_path.read_text(encoding='utf-8', errors='ignore')
+            original_content = content
+            
+            for pattern, replacement in patterns:
+                content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
+                
+            # Clean up multiple spaces
+            content = re.sub(r'  +', ' ', content)
+            
+            if content != original_content:
+                # Backup original
+                backup_path = file_path.with_suffix(file_path.suffix + '.bak')
+                backup_path.write_text(original_content, encoding='utf-8')
+                
+                # Write modified content
+                file_path.write_text(content, encoding='utf-8')
+                logger.info(f"Modified boot config: {file_path.name}")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Failed to modify {file_path}: {e}")
+            
+        return False
 
-echo -e "${GREEN}[DEBUG]${NC} Analysis complete. Check the output above to see what boot files are actually present."
+    def modify_boot_configs(self) -> None:
+        """Modify all boot configuration files."""
+        logger.info("Modifying boot configurations...")
+        
+        modified_count = 0
+        
+        # GRUB configuration files
+        grub_configs = [
+            self.iso_dir / 'boot' / 'grub' / 'grub.cfg',
+            self.iso_dir / 'EFI' / 'BOOT' / 'grub.cfg',
+            self.iso_dir / 'boot' / 'grub' / 'loopback.cfg',
+        ]
+        
+        for config_file in grub_configs:
+            if self.modify_file_with_patterns(config_file, self.grub_patterns):
+                modified_count += 1
+                
+        # ISOLINUX configuration files
+        isolinux_configs = [
+            self.iso_dir / 'isolinux' / 'isolinux.cfg',
+            self.iso_dir / 'isolinux' / 'txt.cfg',
+            self.iso_dir / 'syslinux' / 'isolinux.cfg',
+            self.iso_dir / 'syslinux' / 'txt.cfg',
+        ]
+        
+        for config_file in isolinux_configs:
+            if self.modify_file_with_patterns(config_file, [self.isolinux_pattern]):
+                modified_count += 1
+                
+        if modified_count == 0:
+            logger.warning("No boot configuration files were modified")
+        else:
+            logger.info(f"Successfully modified {modified_count} boot configuration files")
+
+    def get_volume_label(self) -> str:
+        """Extract volume label from source ISO."""
+        try:
+            result = subprocess.run([
+                'xorriso', '-indev', str(self.source_iso), '-report_about', 'NOTE'
+            ], capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                for line in result.stderr.split('\n'):
+                    if 'Volume id' in line:
+                        match = re.search(r"Volume id\s+:\s+'([^']+)'", line)
+                        if match:
+                            return match.group(1)
+        except Exception as e:
+            logger.warning(f"Could not extract volume label: {e}")
+            
+        return "Ubuntu"
+
+    def detect_boot_structure(self) -> Tuple[bool, bool]:
+        """Detect if ISO has UEFI and/or BIOS boot support."""
+        has_uefi = (self.iso_dir / 'boot' / 'grub' / 'efi.img').exists()
+        has_bios = (self.iso_dir / 'isolinux' / 'isolinux.bin').exists()
+        
+        logger.info(f"Boot structure - UEFI: {'✓' if has_uefi else '✗'}, BIOS: {'✓' if has_bios else '✗'}")
+        return has_uefi, has_bios
+
+    def create_iso(self) -> None:
+        """Create the modified ISO."""
+        logger.info("Creating modified ISO...")
+        
+        volume_label = self.get_volume_label()
+        has_uefi, has_bios = self.detect_boot_structure()
+        
+        # Build xorriso command
+        cmd = [
+            'xorriso', '-as', 'mkisofs',
+            '-r', '-V', volume_label,
+            '-o', str(self.output_iso),
+            '-J', '-joliet-long',
+            '-cache-inodes'
+        ]
+        
+        # Add boot configuration based on detected structure
+        if has_bios and has_uefi:
+            # Hybrid boot
+            logger.info("Creating hybrid UEFI/BIOS ISO...")
+            cmd.extend([
+                '-b', 'isolinux/isolinux.bin',
+                '-c', 'isolinux/boot.cat',
+                '-no-emul-boot',
+                '-boot-load-size', '4',
+                '-boot-info-table',
+                '-eltorito-alt-boot',
+                '-e', 'boot/grub/efi.img',
+                '-no-emul-boot',
+                '-isohybrid-gpt-basdat'
+            ])
+        elif has_uefi:
+            # UEFI only
+            logger.info("Creating UEFI-only ISO...")
+            cmd.extend([
+                '-eltorito-alt-boot',
+                '-e', 'boot/grub/efi.img',
+                '-no-emul-boot',
+                '-isohybrid-gpt-basdat'
+            ])
+        elif has_bios:
+            # BIOS only
+            logger.info("Creating BIOS-only ISO...")
+            cmd.extend([
+                '-b', 'isolinux/isolinux.bin',
+                '-c', 'isolinux/boot.cat',
+                '-no-emul-boot',
+                '-boot-load-size', '4',
+                '-boot-info-table'
+            ])
+        else:
+            # Fallback - basic ISO
+            logger.warning("No recognized boot structure, creating basic ISO...")
+            
+        cmd.append(str(self.iso_dir))
+        
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            
+            if result.returncode != 0:
+                raise RuntimeError(f"ISO creation failed: {result.stderr}")
+                
+            # Verify output
+            if not self.output_iso.exists():
+                raise RuntimeError("Output ISO was not created")
+                
+            size_mb = self.output_iso.stat().st_size / (1024 * 1024)
+            if size_mb < 1:
+                raise RuntimeError(f"Output ISO seems too small: {size_mb:.1f} MB")
+                
+            logger.info(f"✓ ISO created successfully: {self.output_iso} ({size_mb:.1f} MB)")
+            
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("ISO creation timed out")
+
+    def build(self, validate_only: bool = False) -> None:
+        """Main build process."""
+        self.check_dependencies()
+        version, iso_format = self.validate_iso()
+        
+        if validate_only:
+            logger.info("Validation complete ✅")
+            return
+            
+        if self.output_iso.exists():
+            logger.info(f"Output ISO already exists: {self.output_iso}")
+            return
+            
+        logger.info(f"Building autoinstall ISO for Ubuntu {version} ({iso_format})")
+        logger.info(f"HTTP server: {self.http_ip}:{self.http_port}")
+        logger.info("⚠️  Ensure your HTTP server serves:")
+        logger.info(f"   - http://{self.http_ip}:{self.http_port}/user-data")
+        logger.info(f"   - http://{self.http_ip}:{self.http_port}/meta-data")
+        
+        self.extract_iso()
+        self.modify_boot_configs()
+        self.create_iso()
+        
+        logger.info("🎉 Build complete!")
+        logger.info(f"Output: {self.output_iso}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Create Ubuntu autoinstall ISO with injected boot parameters",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s ubuntu-22.04.4-live-server-amd64.iso
+  %(prog)s --source ubuntu.iso --output custom.iso --http-server 192.168.1.100
+  %(prog)s --validate-only ubuntu.iso
+        """
+    )
+    
+    parser.add_argument('iso_file', nargs='?', help='Source Ubuntu ISO file')
+    parser.add_argument('--source', help='Source Ubuntu ISO file')
+    parser.add_argument('--output', help='Output ISO filename')
+    parser.add_argument('--http-server', default='10.0.2.2', help='HTTP server IP (default: 10.0.2.2)')
+    parser.add_argument('--http-port', type=int, default=8080, help='HTTP server port (default: 8080)')
+    parser.add_argument('--validate-only', action='store_true', help='Only validate ISO, don\'t build')
+    parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
+    
+    args = parser.parse_args()
+    
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+        
+    # Determine source ISO
+    source_iso = args.source or args.iso_file
+    if not source_iso:
+        parser.error("No source ISO specified")
+        
+    # Use environment variables if available
+    http_ip = os.environ.get('PACKER_HTTP_IP', args.http_server)
+    http_port = int(os.environ.get('PACKER_HTTP_PORT', args.http_port))
+    
+    try:
+        with UbuntuISOBuilder(
+            source_iso=source_iso,
+            output_iso=args.output,
+            http_ip=http_ip,
+            http_port=http_port
+        ) as builder:
+            builder.build(validate_only=args.validate_only)
+            
+    except KeyboardInterrupt:
+        logger.error("Build interrupted by user")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Build failed: {e}")
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
