@@ -1,245 +1,119 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WORKDIR="./iso_work"
-ISO=""
-DEST=""
-VALIDATE_ONLY=false
-HTTP_SERVER="${HTTP_SERVER:-127.0.0.1}"
-HTTP_PORT="${HTTP_PORT:-8000}"
-BOOT_PARAMS="autoinstall ds=nocloud-net;s=http://${HTTP_SERVER}:${HTTP_PORT}/"
-
-log()   { echo "[$(date +'%H:%M:%S')] 🔹 $1"; }
-error() { echo "[$(date +'%H:%M:%S')] ❌ $1" >&2; exit 1; }
+# --- Arguments ---
+SOURCE=""
+DESTINATION=""
+HTTP_SERVER=""
+HTTP_PORT=""
 
 usage() {
-  echo "Usage: $0 --source <ubuntu-*.iso> [--destination <out.iso>] [--http-server host] [--http-port port] [--validate-only]"
-  exit 1
+    echo "Usage: $0 --source <source_iso> --destination <dest_iso> --http-server <ip> --http-port <port>"
+    exit 1
 }
 
-check_dependencies() {
-  for cmd in xorriso grep awk; do
-    command -v "$cmd" >/dev/null || error "Missing dependency: $cmd"
-  done
-}
-
-parse_args() {
-  while [[ $# -gt 0 ]]; do
+# --- Parse arguments ---
+while [[ $# -gt 0 ]]; do
     case "$1" in
-      --source)        ISO="$2";          shift 2 ;;
-      --destination)   DEST="$2";         shift 2 ;;
-      --validate-only) VALIDATE_ONLY=true; shift ;;
-      --http-server)   HTTP_SERVER="$2";  shift 2 ;;
-      --http-port)     HTTP_PORT="$2";    shift 2 ;;
-      -h|--help)       usage ;;
-      *.iso)           ISO="$1";          shift ;;
-      *)               echo "Unknown arg: $1"; usage ;;
+        --source)
+            SOURCE="$2"
+            shift 2
+            ;;
+        --destination)
+            DESTINATION="$2"
+            shift 2
+            ;;
+        --http-server)
+            HTTP_SERVER="$2"
+            shift 2
+            ;;
+        --http-port)
+            HTTP_PORT="$2"
+            shift 2
+            ;;
+        *)
+            usage
+            ;;
     esac
-  done
+done
 
-  [[ -f "$ISO" ]] || error "ISO file not found: $ISO"
+if [[ -z "$SOURCE" || -z "$DESTINATION" || -z "$HTTP_SERVER" || -z "$HTTP_PORT" ]]; then
+    usage
+fi
 
-  if [[ -z "${DEST:-}" ]]; then
-    BASENAME=$(basename "$ISO" .iso)
-    DEST="${BASENAME}-autoinstall.iso"
-  fi
+AUTOINSTALL_ARGS="autoinstall ds=nocloud-net\\;s=http://${HTTP_SERVER}:${HTTP_PORT}/"
 
-  BOOT_PARAMS="autoinstall ds=nocloud-net;s=http://${HTTP_SERVER}:${HTTP_PORT}/"
-}
+WORK_DIR=$(mktemp -d)
+trap 'rm -rf "$WORK_DIR"' EXIT
 
-extract_version() {
-  mkdir -p "$WORKDIR"
-  if xorriso -osirrox on -indev "$ISO" -extract /.disk/info "$WORKDIR/info.txt" >/dev/null 2>&1; then
-    VERSION=$(grep -Eo '[0-9]+\.[0-9]+' "$WORKDIR/info.txt" | head -n1 || true)
-    VERSION="${VERSION:-Unknown}"
-  else
-    VERSION="Unknown"
-  fi
-  log "Detected Ubuntu version: $VERSION"
-}
+echo "[GENERATOR] Using base ISO: $SOURCE"
+echo "[GENERATOR] Output ISO: $DESTINATION"
+echo "[GENERATOR] Autoinstall args: $AUTOINSTALL_ARGS"
 
-detect_structure() {
-  mkdir -p "$WORKDIR"
-  xorriso -indev "$ISO" -find / -type f > "$WORKDIR/files.txt" || true
-  if grep -q "casper/vmlinuz" "$WORKDIR/files.txt"; then
-    FORMAT="Live Server"
-  elif grep -q "boot/grub" "$WORKDIR/files.txt"; then
-    FORMAT="GRUB EFI"
-  elif grep -q "isolinux/txt.cfg" "$WORKDIR/files.txt"; then
-    FORMAT="Legacy Boot"
-  else
-    FORMAT="Unknown"
-  fi
-  log "Detected ISO format: $FORMAT"
-}
+# 1. Mount ISO and copy contents
+mkdir -p "$WORK_DIR/iso"
+mount -o loop "$SOURCE" "$WORK_DIR/iso"
+rsync -a "$WORK_DIR/iso/" "$WORK_DIR/edit/"
+umount "$WORK_DIR/iso"
 
-validate_iso() {
-  extract_version
-  detect_structure
-  [[ "$VALIDATE_ONLY" != true ]] || { log "Validation complete ✅"; exit 0; }
-}
-
-copy_base_iso() {
-  log "Copying base ISO → $DEST"
-  cp -f "$ISO" "$DEST"
-}
-
-collect_candidate_cfgs() {
-  awk '
-    /\/(boot\/grub|grub)\// && /\.cfg$/ {print}
-    /\/isolinux\/txt\.cfg$/             {print}
-    /\/syslinux\/.*\.cfg$/              {print}
-  ' "$WORKDIR/files.txt" 2>/dev/null | sort -u > "$WORKDIR/candidates.txt" || true
-
-  {
-    echo "/boot/grub/grub.cfg"
-    echo "/boot/grub/loopback.cfg"
-    echo "/grub/grub.cfg"
-    echo "/isolinux/txt.cfg"
-    echo "/boot/grub/x86_64-efi/grub.cfg"
-    echo "/EFI/BOOT/grub.cfg"
-  } >> "$WORKDIR/candidates.txt"
-
-  sort -u "$WORKDIR/candidates.txt" -o "$WORKDIR/candidates.txt"
-}
-
-extract_if_exists() {
-  local iso_path="$1" out_local="$2"
-  mkdir -p "$(dirname "$out_local")"
-  if xorriso -osirrox on -indev "$ISO" -extract "$iso_path" "$out_local" >/dev/null 2>&1; then
-    return 0
-  else
-    return 1
-  fi
-}
-
-patch_with_awk() {
-  local file="$1" kind="$2" params="$3"
-  local tmp="$file.tmp"
-  cp -f "$file" "$tmp"
-
-  if [[ "$kind" == "grub" ]]; then
-    awk -v P="$params" '
-      BEGIN{changed=0}
-      /^[ \t]*(linux|linuxefi)[ \t]/ {
-        if (index($0,"ds=nocloud")>0) {print; next}
-        ln=$0
-        p=index(ln,"---")
-        if (p>0) {
-          pre=substr(ln,1,p-1)
-          suf=substr(ln,p)
-          ln=pre" "P" "suf
-        } else {
-          ln=ln" "P" ---"
+# 2. Patch BIOS grub.cfg (default menu entry only)
+if [ -f "$WORK_DIR/edit/boot/grub/grub.cfg" ]; then
+    echo "[GENERATOR] Patching BIOS grub.cfg..."
+    awk -v args="$AUTOINSTALL_ARGS" '
+        BEGIN { in_entry=0; patched=0 }
+        /^menuentry / {
+            if (!patched) { in_entry=1 }
         }
-        print ln
-        changed=1
-        next
-      }
-      {print}
-      END{ if (changed==0) exit 2 }
-    ' "$file" > "$tmp" || return 1
-  else
-    awk -v P="$params" '
-      BEGIN{changed=0}
-      /^[ \t]*append[ \t]/ {
-        if (index($0,"ds=nocloud")>0) {print; next}
-        ln=$0
-        p=index(ln,"---")
-        if (p>0) {
-          pre=substr(ln,1,p-1)
-          suf=substr(ln,p)
-          ln=pre" "P" "suf
-        } else {
-          ln=ln" "P" ---"
+        in_entry && /^\s+linux\s/ {
+            sub(/---$/, args " ---")
+            in_entry=0
+            patched=1
         }
-        print ln
-        changed=1
-        next
-      }
-      {print}
-      END{ if (changed==0) exit 2 }
-    ' "$file" > "$tmp" || return 1
-  fi
+        { print }
+    ' "$WORK_DIR/edit/boot/grub/grub.cfg" > "$WORK_DIR/edit/boot/grub/grub.cfg.tmp"
+    mv "$WORK_DIR/edit/boot/grub/grub.cfg.tmp" "$WORK_DIR/edit/boot/grub/grub.cfg"
+fi
 
-  if ! grep -q "ds=nocloud-net" "$tmp"; then
-    return 1
-  fi
+# 3. Patch UEFI loopback.cfg (default menu entry only)
+EFI_IMG="$WORK_DIR/edit/boot/grub/efi.img"
+if [ -f "$EFI_IMG" ]; then
+    echo "[GENERATOR] Patching UEFI loopback.cfg..."
+    mkdir -p "$WORK_DIR/efi_mount"
+    mount -o loop "$EFI_IMG" "$WORK_DIR/efi_mount"
 
-  mv -f "$tmp" "$file"
-  return 0
-}
-
-patch_kernel_params() {
-  local patched_any=false
-  local cfg_local iso_path kind
-
-  while IFS= read -r iso_path; do
-    [[ -n "$iso_path" ]] || continue
-    cfg_local="$WORKDIR/extract${iso_path}"
-    if extract_if_exists "$iso_path" "$cfg_local"; then
-      if grep -Eq '^[[:space:]]*(linux(efi)?|append)[[:space:]]' "$cfg_local"; then
-        if grep -Eq '^[[:space:]]*append[[:space:]]' "$cfg_local"; then
-          kind="syslinux"
-        else
-          kind="grub"
-        fi
-        if patch_with_awk "$cfg_local" "$kind" "$BOOT_PARAMS"; then
-          patched_any=true
-          log "Patched $kind: $iso_path"
-        fi
-      fi
+    if [ -f "$WORK_DIR/efi_mount/boot/grub/loopback.cfg" ]; then
+        awk -v args="$AUTOINSTALL_ARGS" '
+            BEGIN { in_entry=0; patched=0 }
+            /^menuentry / {
+                if (!patched) { in_entry=1 }
+            }
+            in_entry && /^\s+linux\s/ {
+                sub(/---$/, args " ---")
+                in_entry=0
+                patched=1
+            }
+            { print }
+        ' "$WORK_DIR/efi_mount/boot/grub/loopback.cfg" > "$WORK_DIR/efi_mount/boot/grub/loopback.cfg.tmp"
+        mv "$WORK_DIR/efi_mount/boot/grub/loopback.cfg.tmp" "$WORK_DIR/efi_mount/boot/grub/loopback.cfg"
+    else
+        echo "[GENERATOR] WARNING: loopback.cfg not found!"
     fi
-  done < "$WORKDIR/candidates.txt"
+    umount "$WORK_DIR/efi_mount"
+fi
 
-  [[ "$patched_any" == true ]] || error "No editable kernel lines found to patch."
+# 4. Rebuild ISO
+echo "[GENERATOR] Rebuilding ISO..."
+xorriso -as mkisofs \
+  -r -V "Ubuntu-Autoinstall" \
+  -o "$DESTINATION" \
+  -J -l -cache-inodes \
+  -isohybrid-mbr "$WORK_DIR/edit/isolinux/isohdpfx.bin" \
+  -b isolinux/isolinux.bin \
+     -c isolinux/boot.cat \
+     -no-emul-boot -boot-load-size 4 -boot-info-table \
+  -eltorito-alt-boot \
+  -e EFI/boot/bootx64.efi \
+     -no-emul-boot \
+  "$WORK_DIR/edit"
 
-  local tmp_iso
-  tmp_iso="${DEST%.iso}-tmp.iso"
-  cp -f "$DEST" "$tmp_iso"
-
-  while IFS= read -r iso_path; do
-    [[ -n "$iso_path" ]] || continue
-    cfg_local="$WORKDIR/extract${iso_path}"
-    if [[ -f "$cfg_local" ]] && grep -q "ds=nocloud-net" "$cfg_local"; then
-      xorriso -indev "$tmp_iso" -outdev "$tmp_iso.new" -map "$cfg_local" "$iso_path" >/dev/null 2>&1 \
-        && mv -f "$tmp_iso.new" "$tmp_iso" \
-        || error "Failed to map back: $iso_path"
-    fi
-  done < "$WORKDIR/candidates.txt"
-
-  mv -f "$tmp_iso" "$DEST"
-  log "✅ Kernel params patched in all matching boot configs"
-
-  local verify_ok=false
-  while IFS= read -r iso_path; do
-    [[ -n "$iso_path" ]] || continue
-    if xorriso -osirrox on -indev "$DEST" -extract "$iso_path" "$WORKDIR/verify.cfg" >/dev/null 2>&1; then
-      if grep -q "ds=nocloud-net" "$WORKDIR/verify.cfg"; then
-        verify_ok=true
-        break
-      fi
-    fi
-  done < "$WORKDIR/candidates.txt"
-
-  [[ "$verify_ok" == true ]] || error "Autoinstall params missing after patch."
-  log "✅ Verified autoinstall params present"
-}
-
-build_output() {
-  copy_base_iso
-  collect_candidate_cfgs
-  patch_kernel_params
-  log "✅ Output ISO ready: $DEST"
-}
-
-cleanup() {
-  rm -rf "$WORKDIR"
-}
-
-check_dependencies
-parse_args "$@"
-validate_iso
-build_output
-cleanup
-exit 0
+echo "[GENERATOR] Done! ISO saved as $DESTINATION"
