@@ -121,6 +121,8 @@ fi
 
 # === Repackage ISO ===
 log "🔨 Creating autoinstall ISO..."
+# Convert destination to absolute path before changing directories
+DEST_ABS=$(realpath "$DEST")
 cd "$TMPDIR"
 xorriso -as mkisofs \
     -r -V "$VOLUME_LABEL" \
@@ -128,7 +130,7 @@ xorriso -as mkisofs \
     -e boot/grub/efi.img \
     -no-emul-boot \
     -isohybrid-gpt-basdat \
-    -o "../$DEST" . &>/dev/null
+    -o "$DEST_ABS" . &>/dev/null
 cd - &>/dev/null
 log "✅ Created autoinstall ISO: $DEST"
 
