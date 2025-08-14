@@ -74,7 +74,14 @@ log "📁 Created temp dir: $TMPDIR"
 log "📦 Extracting ISO contents..."
 xorriso -osirrox on -indev "$SOURCE" -extract / "$TMPDIR" &>/dev/null
 chmod -R u+w "$TMPDIR"
-rm -rf "$TMPDIR/"'[BOOT]'
+
+# Move boot partition images if they exist (Ubuntu 22.04+ format)
+if [[ -d "$TMPDIR/[BOOT]" ]]; then
+    mv "$TMPDIR/[BOOT]" "$TMPDIR/../BOOT"
+    log "📦 Found separate boot partitions (Ubuntu 22.04+ format)"
+else
+    log "📦 Using single partition format (Ubuntu 20.04 or earlier)"
+fi
 
 # === Validate Ubuntu ISO ===
 [[ ! -f "$TMPDIR/casper/vmlinuz" ]] && die "Not a Ubuntu live ISO (missing casper/vmlinuz)"
@@ -124,23 +131,66 @@ log "🔨 Creating autoinstall ISO..."
 # Convert destination to absolute path before changing directories
 DEST_ABS=$(realpath "$DEST")
 log "📍 Output path: $DEST_ABS"
-cd "$TMPDIR"
-if ! xorriso -as mkisofs \
-    -r -V "$VOLUME_LABEL" \
-    -J -joliet-long \
-    -e boot/grub/efi.img \
-    -no-emul-boot \
-    -isohybrid-gpt-basdat \
-    -o "$DEST_ABS" . 2>/dev/null; then
-    log "❌ xorriso failed, trying without error suppression..."
-    xorriso -as mkisofs \
+
+# Check if we have the BOOT directory with partition images (Ubuntu 22.04+ format)
+if [[ -d "$TMPDIR/../BOOT" ]]; then
+    log "📦 Using Ubuntu 22.04+ format with separate boot partitions"
+    cd "$TMPDIR"
+    if ! xorriso -as mkisofs -r \
+        -V "$VOLUME_LABEL" \
+        -o "$DEST_ABS" \
+        --grub2-mbr ../BOOT/1-Boot-NoEmul.img \
+        -partition_offset 16 \
+        --mbr-force-bootable \
+        -append_partition 2 28732ac11ff8d211ba4b00a0c93ec93b ../BOOT/2-Boot-NoEmul.img \
+        -appended_part_as_gpt \
+        -iso_mbr_part_type a2a0d0ebe5b9334487c068b6b72699c7 \
+        -c '/boot.catalog' \
+        -b '/boot/grub/i386-pc/eltorito.img' \
+        -no-emul-boot -boot-load-size 4 -boot-info-table --grub2-boot-info \
+        -eltorito-alt-boot \
+        -e '--interval:appended_partition_2:::' \
+        -no-emul-boot \
+        . 2>/dev/null; then
+        log "❌ xorriso failed, trying without error suppression..."
+        xorriso -as mkisofs -r \
+            -V "$VOLUME_LABEL" \
+            -o "$DEST_ABS" \
+            --grub2-mbr ../BOOT/1-Boot-NoEmul.img \
+            -partition_offset 16 \
+            --mbr-force-bootable \
+            -append_partition 2 28732ac11ff8d211ba4b00a0c93ec93b ../BOOT/2-Boot-NoEmul.img \
+            -appended_part_as_gpt \
+            -iso_mbr_part_type a2a0d0ebe5b9334487c068b6b72699c7 \
+            -c '/boot.catalog' \
+            -b '/boot/grub/i386-pc/eltorito.img' \
+            -no-emul-boot -boot-load-size 4 -boot-info-table --grub2-boot-info \
+            -eltorito-alt-boot \
+            -e '--interval:appended_partition_2:::' \
+            -no-emul-boot \
+            .
+        die "xorriso command failed"
+    fi
+else
+    log "📦 Using older Ubuntu format (pre-22.04)"
+    cd "$TMPDIR"
+    if ! xorriso -as mkisofs \
         -r -V "$VOLUME_LABEL" \
         -J -joliet-long \
         -e boot/grub/efi.img \
         -no-emul-boot \
         -isohybrid-gpt-basdat \
-        -o "$DEST_ABS" .
-    die "xorriso command failed"
+        -o "$DEST_ABS" . 2>/dev/null; then
+        log "❌ xorriso failed, trying without error suppression..."
+        xorriso -as mkisofs \
+            -r -V "$VOLUME_LABEL" \
+            -J -joliet-long \
+            -e boot/grub/efi.img \
+            -no-emul-boot \
+            -isohybrid-gpt-basdat \
+            -o "$DEST_ABS" .
+        die "xorriso command failed"
+    fi
 fi
 cd - &>/dev/null
 log "✅ Created autoinstall ISO: $DEST"
