@@ -42,13 +42,14 @@ echo -e "${BLUE}--- xorriso boot info ---${NC}"
 xorriso -indev "$ISO_SOURCE" -report_about NOTE 2>&1 | grep -E "(Boot record|Volume|El-Torito|EFI)"
 
 echo -e "${BLUE}--- xorriso detailed boot analysis ---${NC}"
+# No change needed here, it's already redirecting stderr
 xorriso -indev "$ISO_SOURCE" -report_el_torito as_mkisofs 2>&1 | head -20
 
 # 3. Look for all boot-related files
 echo -e "${GREEN}[DEBUG]${NC} 3. Searching for boot files..."
 
 echo -e "${BLUE}--- Boot directories and files ---${NC}"
-find "$MOUNT_POINT" -type d -name "*boot*" -o -name "*grub*" -o -name "*efi*" -o -name "*isolinux*" 2>/dev/null | sort
+find "$MOUNT_POINT" -type d \( -name "*boot*" -o -name "*grub*" -o -name "*efi*" -o -name "*isolinux*" \) 2>/dev/null | sort
 
 echo -e "${BLUE}--- All .img files ---${NC}"
 find "$MOUNT_POINT" -name "*.img" 2>/dev/null
@@ -90,19 +91,21 @@ ls -la "$MOUNT_POINT/"
 
 echo -e "${GREEN}[DEBUG]${NC} 6. Boot directory contents..."
 if [[ -d "$MOUNT_POINT/boot" ]]; then
-    find "$MOUNT_POINT/boot" -type f | head -20
+    # FIX: Redirect stderr to /dev/null to suppress harmless SIGPIPE messages
+    find "$MOUNT_POINT/boot" -type f 2>/dev/null | head -20
 else
     echo -e "${YELLOW}[DEBUG]${NC} No /boot directory found"
 fi
 
 echo -e "${GREEN}[DEBUG]${NC} 7. EFI directory contents..."
 if [[ -d "$MOUNT_POINT/EFI" ]]; then
-    find "$MOUNT_POINT/EFI" -type f | head -20
+    # FIX: Redirect stderr to /dev/null
+    find "$MOUNT_POINT/EFI" -type f 2>/dev/null | head -20
 else
     echo -e "${YELLOW}[DEBUG]${NC} No /EFI directory found"
 fi
 
-# 6. Extract to work directory and check file permissions
+# 8. Extract to work directory and check file permissions
 echo -e "${GREEN}[DEBUG]${NC} 8. Extracting sample files for analysis..."
 mkdir -p "$WORK_DIR/sample"
 
@@ -114,7 +117,8 @@ fi
 if [[ -d "$MOUNT_POINT/boot" ]]; then
     # Check what boot files actually exist
     echo -e "${BLUE}--- All files in /boot ---${NC}"
-    find "$MOUNT_POINT/boot" -type f -exec ls -la {} \; | head -20
+    # FIX: Redirect stderr from find to suppress SIGPIPE errors from its '-exec' action
+    find "$MOUNT_POINT/boot" -type f -exec ls -la {} \; 2>/dev/null | head -20
 fi
 
 echo -e "${GREEN}[DEBUG]${NC} Analysis complete. Check the output above to see what boot files are actually present."

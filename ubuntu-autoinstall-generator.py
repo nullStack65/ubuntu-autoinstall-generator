@@ -239,9 +239,9 @@ class UbuntuISOBuilder:
 
     def create_iso(self) -> None:
         """Create the modified ISO by replicating the original's boot structure."""
+        import shlex  # Import shlex for robust command parsing
+
         logger.info("Creating modified ISO...")
-        
-        volume_label = self.get_volume_label()
         
         # 1. Extract the exact boot arguments from the original ISO.
         # This is the most reliable way to ensure the new ISO is bootable.
@@ -251,40 +251,43 @@ class UbuntuISOBuilder:
                 ['xorriso', '-indev', str(self.source_iso), '-report_el_torito', 'as_mkisofs'],
                 capture_output=True, text=True, check=True, timeout=60
             )
-            boot_args = result.stdout.strip().split('\n')
-            # Filter for the relevant arguments needed for mkisofs
-            boot_args = [arg for arg in boot_args if arg.startswith('-')]
+            # Use shlex.split to correctly parse the command-line arguments,
+            # handling quotes and spaces properly. This is the key fix.
+            boot_args = shlex.split(result.stdout.strip())
             logger.info(f"Successfully extracted {len(boot_args)} boot arguments.")
+
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            raise RuntimeError(f"Failed to extract boot information from source ISO: {e.stderr}")
+            stderr = e.stderr if hasattr(e, 'stderr') else 'Timeout'
+            raise RuntimeError(f"Failed to extract boot information from source ISO: {stderr}")
 
         # 2. Build the final xorriso command.
+        # Start with the basic command and add our specific overrides.
         cmd = [
             'xorriso', '-as', 'mkisofs',
-            '-r', '-V', volume_label,
+            '-r',  # Add Rock Ridge extensions for permissions
             '-o', str(self.output_iso),
         ]
         
-        # Add the extracted boot arguments
+        # Add the extracted boot arguments, which contain the correct volume ID,
+        # boot catalog, boot images, and all other necessary parameters.
         cmd.extend(boot_args)
         
-        # Add the path to the modified files at the end
+        # Finally, add the path to the source directory for the new ISO.
         cmd.append(str(self.iso_dir))
         
         logger.info("Creating new ISO with replicated boot structure...")
-        logger.debug(f"Running command: {' '.join(cmd)}")
+        logger.debug(f"Running command: {shlex.join(cmd)}")
         
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
             
             if result.returncode != 0:
-                # Log the error from xorriso for easier debugging
+                # Provide detailed error output from xorriso for easier debugging
                 logger.error(f"xorriso failed with exit code {result.returncode}")
-                logger.error(f"xorriso stdout: {result.stdout}")
-                logger.error(f"xorriso stderr: {result.stderr}")
+                logger.error(f"xorriso stdout:\n{result.stdout}")
+                logger.error(f"xorriso stderr:\n{result.stderr}")
                 raise RuntimeError("ISO creation failed. See logs above for details.")
 
-            # Verify output
             if not self.output_iso.exists():
                 raise RuntimeError("Output ISO was not created")
                 
