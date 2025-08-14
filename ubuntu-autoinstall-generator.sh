@@ -57,7 +57,6 @@ extract_version() {
 
 detect_structure() {
   xorriso -indev "$ISO" -find / -type f > "$WORKDIR/files.txt"
-  GRUB_PATH=$(grep -E 'grub.cfg$' "$WORKDIR/files.txt" | head -n1 || true)
 
   if grep -q "casper/vmlinuz" "$WORKDIR/files.txt"; then
     FORMAT="Live Server"
@@ -68,9 +67,20 @@ detect_structure() {
   else
     FORMAT="Unknown"
   fi
-
   log "Detected ISO format: $FORMAT"
-  [[ -n "$GRUB_PATH" ]] || error "Could not locate grub.cfg in ISO"
+
+  # Try to locate grub.cfg dynamically, fallback to known Live Server path
+  GRUB_PATH=$(grep -E '/boot/grub/grub.cfg$' "$WORKDIR/files.txt" | head -n1 || true)
+
+  if [[ -z "$GRUB_PATH" ]]; then
+    log "⚠️ grub.cfg not found via grep — falling back to default path for Live Server"
+    GRUB_PATH="/boot/grub/grub.cfg"
+  fi
+
+  if ! grep -Fxq "$GRUB_PATH" "$WORKDIR/files.txt"; then
+    error "Could not locate grub.cfg at expected path: $GRUB_PATH"
+  fi
+
   log "Located grub.cfg at: $GRUB_PATH"
 }
 
