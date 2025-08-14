@@ -4,12 +4,27 @@ set -e
 
 # === CONFIG ===
 WORKDIR="./iso_work"
-OUTPUT="./output"
 ISO=""
 DEST=""
 VALIDATE_ONLY=false
 
-# === ARG PARSING ===
+# === FUNCTIONS ===
+
+log() {
+    echo -e "[$(date +'%H:%M:%S')] 🔹 $1"
+}
+
+error() {
+    echo -e "[$(date +'%H:%M:%S')] ❌ $1" >&2
+    exit 1
+}
+
+check_dependencies() {
+    for cmd in xorriso grep awk; do
+        command -v $cmd >/dev/null || error "Missing dependency: $cmd"
+    done
+}
+
 parse_args() {
     while [[ "$#" -gt 0 ]]; do
         case "$1" in
@@ -31,29 +46,11 @@ parse_args() {
     fi
 }
 
-
-# === FUNCTIONS ===
-
-log() {
-    echo -e "[$(date +'%H:%M:%S')] 🔹 $1"
-}
-
-error() {
-    echo -e "[$(date +'%H:%M:%S')] ❌ $1" >&2
-    exit 1
-}
-
-check_dependencies() {
-    for cmd in xorriso grep awk; do
-        command -v $cmd >/dev/null || error "Missing dependency: $cmd"
-    done
-}
-
 extract_version() {
     mkdir -p "$WORKDIR"
     xorriso -osirrox on -indev "$ISO" -extract /.disk/info "$WORKDIR/info.txt" || return
-    VERSION=$(grep -oP 'Ubuntu \K[0-9]+\.[0-9]+' "$WORKDIR/info.txt" || echo "Unknown")
-    log "Detected Ubuntu version: $VERSION"
+    VERSION=$(grep -Eo '[0-9]{2}\.[0-9]{2}' "$WORKDIR/info.txt" | head -n1 || echo "Unknown")
+    log "Detected Ubuntu version: ${VERSION:-Unknown}"
 }
 
 detect_structure() {
@@ -82,21 +79,21 @@ validate_iso() {
 }
 
 build_output() {
-    mkdir -p "$OUTPUT"
     log "Packaging ISO for format: $FORMAT"
 
     case "$FORMAT" in
         "Live Server")
             log "Using casper-based packaging..."
-            # Insert packaging logic here
+            # Placeholder logic — replace with actual packaging steps
+            cp "$ISO" "$DEST"
             ;;
         "GRUB EFI")
             log "Using GRUB EFI packaging..."
-            # Insert packaging logic here
+            cp "$ISO" "$DEST"
             ;;
         "Legacy Boot")
             log "Using legacy boot packaging..."
-            # Insert packaging logic here
+            cp "$ISO" "$DEST"
             ;;
         *)
             error "Unsupported ISO format. Cannot proceed."
@@ -104,6 +101,7 @@ build_output() {
     esac
 
     log "Packaging complete 🎉"
+    log "Output ISO: $DEST"
 }
 
 cleanup() {
