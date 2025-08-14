@@ -35,7 +35,7 @@ class UbuntuISOBuilder:
         self.iso_dir = None
         
         # Autoinstall parameters
-        self.autoinstall_params = f"autoinstall ds=nocloud-net;s=http://{http_ip}:{http_port}/"
+        self.autoinstall_params = f"autoinstall ip=dhcp ds=nocloud-net;s=http://{http_ip}:{http_port}/"
         
         # Boot configuration patterns
         self.grub_patterns = [
