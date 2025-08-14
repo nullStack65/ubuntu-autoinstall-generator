@@ -118,15 +118,21 @@ build_output() {
         -r -V "UBUNTU_AUTOINSTALL" \
         -o "$DEST" \
         -J -l -cache-inodes \
-        -isohybrid-mbr "$TMPDIR/isolinux/isohdpfx.bin" \
+        -isohybrid-gpt-basdat \
         -partition_offset 16 \
-        -b isolinux/isolinux.bin \
-        -c isolinux/boot.cat \
-        -no-emul-boot -boot-load-size 4 -boot-info-table \
+        --grub2-mbr "$TMPDIR/boot/grub/i386-pc/boot_hybrid.img" \
+        -append_partition 2 0xef "$TMPDIR/boot/grub/efi.img" \
+        -appended_part_as_gpt \
+        -c boot.catalog \
+        -b boot/grub/i386-pc/eltorito.img \
+        -no-emul-boot \
+        -boot-load-size 4 \
+        -boot-info-table \
         -eltorito-alt-boot \
-        -e boot/grub/efi.img \
+        -e '--interval:appended_partition_2:all::' \
         -no-emul-boot \
         "$TMPDIR"
+
 
     rm -rf "$TMPDIR"
     log "Packaging complete 🎉"
