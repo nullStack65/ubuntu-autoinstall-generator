@@ -231,7 +231,7 @@ Usage: $0 [OPTIONS] <iso_file>
 Options:
     --source <file>         Source ISO file
     --destination <file>    Output ISO file (default: <source>-autoinstall.iso)
-    --validate-only         Only validate the ISO, don't create output
+    --validate-only         Only validate the ISO, don't create new ISO output
     --http-server <ip>      Packer HTTP server IP (default: 10.0.2.2)
     --http-port <port>      Packer HTTP server port (default: 8080)
     --help                  Show this help message
