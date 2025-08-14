@@ -194,13 +194,24 @@ create_iso() {
     
     # Extract the exact boot configuration from the original ISO
     log "Analyzing original ISO boot structure..."
-    xorriso -indev "$ISO" -report_el_torito as_mkisofs 2>/dev/null > "$WORKDIR/boot_info.txt" || true
+    xorriso -indev "$ISO" -report_el_torito as_mkisofs 2>/dev/null > "$WORKDIR/boot_info.txt" || {
+        log "⚠️  Could not extract boot info, continuing with detection..."
+        touch "$WORKDIR/boot_info.txt"
+    }
+    
+    # Show what files we actually have
+    log "Boot files present:"
+    [[ -f "$WORKDIR/iso/boot/grub/efi.img" ]] && log "  ✓ boot/grub/efi.img found"
+    [[ -f "$WORKDIR/iso/isolinux/isolinux.bin" ]] && log "  ✓ isolinux/isolinux.bin found"
+    [[ -f "$WORKDIR/iso/isolinux/boot.cat" ]] && log "  ✓ isolinux/boot.cat found"
+    
+    local iso_created=false
     
     # Try to replicate the original Ubuntu ISO structure exactly
     if [[ -f "$WORKDIR/iso/boot/grub/efi.img" ]] && [[ -f "$WORKDIR/iso/isolinux/isolinux.bin" ]]; then
         # Hybrid UEFI/BIOS like original Ubuntu ISOs
         log "Creating hybrid UEFI/BIOS ISO (Ubuntu-style)..."
-        xorriso -as mkisofs \
+        if xorriso -as mkisofs \
             -r -V "$VOLUME_LABEL" \
             -o "$DEST" \
             -J -joliet-long \
@@ -214,11 +225,17 @@ create_iso() {
             -e boot/grub/efi.img \
             -no-emul-boot \
             -isohybrid-gpt-basdat \
-            "$WORKDIR/iso/" 2>/dev/null
-    elif [[ -f "$WORKDIR/iso/boot/grub/efi.img" ]]; then
+            "$WORKDIR/iso/" >/dev/null 2>&1; then
+            iso_created=true
+        else
+            log "⚠️  Hybrid ISO creation failed, trying alternatives..."
+        fi
+    fi
+    
+    if [[ "$iso_created" == false ]] && [[ -f "$WORKDIR/iso/boot/grub/efi.img" ]]; then
         # UEFI only
         log "Creating UEFI-only ISO..."
-        xorriso -as mkisofs \
+        if xorriso -as mkisofs \
             -r -V "$VOLUME_LABEL" \
             -o "$DEST" \
             -J -joliet-long \
@@ -227,11 +244,17 @@ create_iso() {
             -e boot/grub/efi.img \
             -no-emul-boot \
             -isohybrid-gpt-basdat \
-            "$WORKDIR/iso/" 2>/dev/null
-    elif [[ -f "$WORKDIR/iso/isolinux/isolinux.bin" ]]; then
+            "$WORKDIR/iso/" >/dev/null 2>&1; then
+            iso_created=true
+        else
+            log "⚠️  UEFI ISO creation failed, trying alternatives..."
+        fi
+    fi
+    
+    if [[ "$iso_created" == false ]] && [[ -f "$WORKDIR/iso/isolinux/isolinux.bin" ]]; then
         # BIOS only
         log "Creating BIOS-only ISO..."
-        xorriso -as mkisofs \
+        if xorriso -as mkisofs \
             -r -V "$VOLUME_LABEL" \
             -o "$DEST" \
             -J -joliet-long \
@@ -241,36 +264,58 @@ create_iso() {
             -no-emul-boot \
             -boot-load-size 4 \
             -boot-info-table \
-            "$WORKDIR/iso/" 2>/dev/null
-    else
+            "$WORKDIR/iso/" >/dev/null 2>&1; then
+            iso_created=true
+        else
+            log "⚠️  BIOS ISO creation failed, trying alternatives..."
+        fi
+    fi
+    
+    if [[ "$iso_created" == false ]]; then
         # Try to copy the exact boot structure from original
-        log "⚠️  Using advanced boot structure detection..."
+        log "Using advanced boot structure detection..."
         if [[ -s "$WORKDIR/boot_info.txt" ]]; then
             log "Attempting to replicate original boot configuration..."
             # Extract the mkisofs command from the original analysis
             BOOT_ARGS=$(grep -o "\-[be] [^[:space:]]*" "$WORKDIR/boot_info.txt" | tr '\n' ' ' || echo "")
+            log "Boot args extracted: $BOOT_ARGS"
             if [[ -n "$BOOT_ARGS" ]]; then
-                xorriso -as mkisofs \
+                if xorriso -as mkisofs \
                     -r -V "$VOLUME_LABEL" \
                     -o "$DEST" \
                     -J -joliet-long \
                     -cache-inodes \
                     $BOOT_ARGS \
-                    "$WORKDIR/iso/" 2>/dev/null
-            else
-                log "⚠️  Falling back to basic ISO creation..."
-                xorriso -as mkisofs -r -V "$VOLUME_LABEL" -o "$DEST" "$WORKDIR/iso/" 2>/dev/null
+                    "$WORKDIR/iso/" >/dev/null 2>&1; then
+                    iso_created=true
+                else
+                    log "⚠️  Advanced boot structure replication failed..."
+                fi
             fi
+        fi
+    fi
+    
+    if [[ "$iso_created" == false ]]; then
+        log "Falling back to basic ISO creation..."
+        if xorriso -as mkisofs -r -V "$VOLUME_LABEL" -o "$DEST" "$WORKDIR/iso/" >/dev/null 2>&1; then
+            iso_created=true
         else
-            log "⚠️  Falling back to basic ISO creation..."
-            xorriso -as mkisofs -r -V "$VOLUME_LABEL" -o "$DEST" "$WORKDIR/iso/" 2>/dev/null
+            error "All ISO creation methods failed!"
         fi
     fi
     
     # Verify the created ISO
     if [[ ! -f "$DEST" ]]; then
-        error "Failed to create ISO file"
+        error "ISO file was not created"
     fi
+    
+    # Check file size
+    ISO_SIZE=$(stat -c%s "$DEST" 2>/dev/null || echo "0")
+    if [[ "$ISO_SIZE" -lt 1000000 ]]; then
+        error "Created ISO seems too small ($ISO_SIZE bytes) - creation likely failed"
+    fi
+    
+    log "ISO created successfully ($(( ISO_SIZE / 1024 / 1024 )) MB)"
     
     log "Verifying created ISO boot structure..."
     xorriso -indev "$DEST" -report_about NOTE 2>/dev/null | grep -E "(Boot record|Volume id)" || log "⚠️  Could not verify boot structure"
