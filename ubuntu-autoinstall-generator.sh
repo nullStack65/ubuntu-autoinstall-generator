@@ -20,7 +20,7 @@ error() {
 }
 
 check_dependencies() {
-    for cmd in xorriso grep awk sed; do
+    for cmd in xorriso grep awk; do
         command -v $cmd >/dev/null || error "Missing dependency: $cmd"
     done
 }
@@ -39,6 +39,7 @@ parse_args() {
 
     [[ -f "$ISO" ]] || error "ISO file not found: $ISO"
 
+    # Default destination if not set
     if [[ -z "$DEST" ]]; then
         BASENAME=$(basename "$ISO" .iso)
         DEST="${BASENAME}-autoinstall.iso"
@@ -68,21 +69,6 @@ detect_structure() {
     log "Detected ISO format: $FORMAT"
 }
 
-inject_kernel_args() {
-    log "Injecting autoinstall kernel parameters..."
-
-    mkdir -p "$WORKDIR/iso"
-    xorriso -osirrox on -indev "$ISO" -extract / "$WORKDIR/iso"
-
-    GRUB_CFG="$WORKDIR/iso/boot/grub/grub.cfg"
-    if [[ -f "$GRUB_CFG" ]]; then
-        sed -i '/linux / s/$/ autoinstall ds=nocloud-net;s=http:\/\/{{ .HTTPIP }}:{{ .HTTPPort }}\//' "$GRUB_CFG"
-        log "Kernel parameters injected into grub.cfg"
-    else
-        error "Could not find grub.cfg to inject kernel parameters"
-    fi
-}
-
 validate_iso() {
     extract_version
     detect_structure
@@ -100,30 +86,49 @@ build_output() {
 
     log "Packaging ISO for format: $FORMAT"
 
+    TMPDIR=$(mktemp -d)
+    xorriso -osirrox on -indev "$ISO" -extract / "$TMPDIR"
+
     case "$FORMAT" in
-        "Live Server")
-            inject_kernel_args
-            xorriso -as mkisofs -o "$DEST" \
-                -iso-level 3 \
-                -full-iso9660-filenames \
-                -volid "Ubuntu_Autoinstall" \
-                -eltorito-boot boot/grub/i386-pc/eltorito.img \
-                -no-emul-boot -boot-load-size 4 -boot-info-table \
-                -eltorito-alt-boot -e boot/grub/efi.img \
-                -no-emul-boot -isohybrid-gpt-basdat \
-                "$WORKDIR/iso"
+        "GRUB EFI"|"Live Server")
+            log "Injecting autoinstall and Packer HTTP kernel args..."
+            GRUB_CFG="$TMPDIR/boot/grub/grub.cfg"
+            if [[ -f "$GRUB_CFG" ]]; then
+                sed -i 's@ ---@ autoinstall ds=nocloud-net\;s=http://{{ .HTTPIP }}:{{ .HTTPPort }}/ ---@g' "$GRUB_CFG"
+            else
+                error "Could not find grub.cfg to patch."
+            fi
             ;;
         "Legacy Boot")
-            cp "$ISO" "$DEST"
-            ;;
-        "GRUB EFI")
-            cp "$ISO" "$DEST"
+            log "Injecting into isolinux/txt.cfg..."
+            TXT_CFG=$(find "$TMPDIR" -name "txt.cfg" | head -n1)
+            if [[ -f "$TXT_CFG" ]]; then
+                sed -i 's@ ---@ autoinstall ds=nocloud-net\;s=http://{{ .HTTPIP }}:{{ .HTTPPort }}/ ---@g' "$TXT_CFG"
+            else
+                error "Could not find isolinux txt.cfg to patch."
+            fi
             ;;
         *)
             error "Unsupported ISO format. Cannot proceed."
             ;;
     esac
 
+    log "Rebuilding ISO..."
+    xorriso -as mkisofs \
+        -r -V "UBUNTU_AUTOINSTALL" \
+        -o "$DEST" \
+        -J -l -cache-inodes \
+        -isohybrid-mbr "$TMPDIR/isolinux/isohdpfx.bin" \
+        -partition_offset 16 \
+        -b isolinux/isolinux.bin \
+        -c isolinux/boot.cat \
+        -no-emul-boot -boot-load-size 4 -boot-info-table \
+        -eltorito-alt-boot \
+        -e boot/grub/efi.img \
+        -no-emul-boot \
+        "$TMPDIR"
+
+    rm -rf "$TMPDIR"
     log "Packaging complete 🎉"
     log "Output ISO: $DEST"
 }
