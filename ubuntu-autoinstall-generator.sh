@@ -31,7 +31,7 @@ parse_args() {
             --source) ISO="$2"; shift ;;
             --destination) DEST="$2"; shift ;;
             --validate-only) VALIDATE_ONLY=true ;;
-            *.iso) ISO="$1" ;;  # fallback for positional ISO
+            *.iso) ISO="$1" ;;
             *) error "Unknown argument: $1" ;;
         esac
         shift
