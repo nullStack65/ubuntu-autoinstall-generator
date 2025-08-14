@@ -29,17 +29,17 @@ check_dependencies() {
 # === ARG PARSING ===
 parse_args() {
   while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --source)        ISO="$2"; shift ;;
-      --destination)   DEST="$2"; shift ;;
-      --validate-only) VALIDATE_ONLY=true ;;
-      --http-server)   HTTP_SERVER="$2"; shift ;;
-      --http-port)     HTTP_PORT="$2";   shift ;;
-      *.iso)           ISO="$1" ;;
-      *) error "Unknown argument: $1" ;;
-    esac
-    shift
-  done
+  case "$1" in
+    --source)        ISO="$2";          shift 2 ;;
+    --destination)   DEST="$2";         shift 2 ;;
+    --validate-only) VALIDATE_ONLY=true; shift   ;;
+    --http-server)   HTTP_SERVER="$2";  shift 2 ;;
+    --http-port)     HTTP_PORT="$2";    shift 2 ;;
+    -h|--help)       usage             ;;
+    *.iso)           ISO="$1";          shift   ;;
+    *)               echo "Unknown arg: $1"; usage ;;
+  esac
+done
 
   [[ -f "$ISO" ]] || error "ISO file not found: $ISO"
 
