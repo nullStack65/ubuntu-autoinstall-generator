@@ -86,55 +86,24 @@ build_output() {
 
     log "Packaging ISO for format: $FORMAT"
 
-    TMPDIR=$(mktemp -d)
-    xorriso -osirrox on -indev "$ISO" -extract / "$TMPDIR"
-
     case "$FORMAT" in
-        "GRUB EFI"|"Live Server")
-            log "Injecting autoinstall and Packer HTTP kernel args..."
-            GRUB_CFG="$TMPDIR/boot/grub/grub.cfg"
-            if [[ -f "$GRUB_CFG" ]]; then
-                sed -i 's@ ---@ autoinstall ds=nocloud-net\;s=http://{{ .HTTPIP }}:{{ .HTTPPort }}/ ---@g' "$GRUB_CFG"
-            else
-                error "Could not find grub.cfg to patch."
-            fi
+        "Live Server")
+            log "Using casper-based packaging..."
+            cp "$ISO" "$DEST"
+            ;;
+        "GRUB EFI")
+            log "Using GRUB EFI packaging..."
+            cp "$ISO" "$DEST"
             ;;
         "Legacy Boot")
-            log "Injecting into isolinux/txt.cfg..."
-            TXT_CFG=$(find "$TMPDIR" -name "txt.cfg" | head -n1)
-            if [[ -f "$TXT_CFG" ]]; then
-                sed -i 's@ ---@ autoinstall ds=nocloud-net\;s=http://{{ .HTTPIP }}:{{ .HTTPPort }}/ ---@g' "$TXT_CFG"
-            else
-                error "Could not find isolinux txt.cfg to patch."
-            fi
+            log "Using legacy boot packaging..."
+            cp "$ISO" "$DEST"
             ;;
         *)
             error "Unsupported ISO format. Cannot proceed."
             ;;
     esac
 
-    log "Rebuilding ISO..."
-    xorriso -as mkisofs \
-        -r -V "UBUNTU_AUTOINSTALL" \
-        -o "$DEST" \
-        -J -l -cache-inodes \
-        -isohybrid-gpt-basdat \
-        -partition_offset 16 \
-        --grub2-mbr "$TMPDIR/boot/grub/i386-pc/boot_hybrid.img" \
-        -append_partition 2 0xef "$TMPDIR/boot/grub/efi.img" \
-        -appended_part_as_gpt \
-        -c boot.catalog \
-        -b boot/grub/i386-pc/eltorito.img \
-        -no-emul-boot \
-        -boot-load-size 4 \
-        -boot-info-table \
-        -eltorito-alt-boot \
-        -e '--interval:appended_partition_2:all::' \
-        -no-emul-boot \
-        "$TMPDIR"
-
-
-    rm -rf "$TMPDIR"
     log "Packaging complete 🎉"
     log "Output ISO: $DEST"
 }
