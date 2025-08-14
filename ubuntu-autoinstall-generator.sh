@@ -123,14 +123,25 @@ fi
 log "🔨 Creating autoinstall ISO..."
 # Convert destination to absolute path before changing directories
 DEST_ABS=$(realpath "$DEST")
+log "📍 Output path: $DEST_ABS"
 cd "$TMPDIR"
-xorriso -as mkisofs \
+if ! xorriso -as mkisofs \
     -r -V "$VOLUME_LABEL" \
     -J -joliet-long \
     -e boot/grub/efi.img \
     -no-emul-boot \
     -isohybrid-gpt-basdat \
-    -o "$DEST_ABS" . &>/dev/null
+    -o "$DEST_ABS" . 2>/dev/null; then
+    log "❌ xorriso failed, trying without error suppression..."
+    xorriso -as mkisofs \
+        -r -V "$VOLUME_LABEL" \
+        -J -joliet-long \
+        -e boot/grub/efi.img \
+        -no-emul-boot \
+        -isohybrid-gpt-basdat \
+        -o "$DEST_ABS" .
+    die "xorriso command failed"
+fi
 cd - &>/dev/null
 log "✅ Created autoinstall ISO: $DEST"
 
