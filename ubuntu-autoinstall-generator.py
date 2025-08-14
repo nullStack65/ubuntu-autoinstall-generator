@@ -238,59 +238,52 @@ class UbuntuISOBuilder:
         return has_uefi, has_bios
 
     def create_iso(self) -> None:
-        """Create the modified ISO."""
+        """Create the modified ISO by replicating the original's boot structure."""
         logger.info("Creating modified ISO...")
         
         volume_label = self.get_volume_label()
-        has_uefi, has_bios = self.detect_boot_structure()
         
-        # Try to copy the original ISO's boot structure as closely as possible
+        # 1. Extract the exact boot arguments from the original ISO.
+        # This is the most reliable way to ensure the new ISO is bootable.
+        logger.info("Extracting boot information from original ISO...")
+        try:
+            result = subprocess.run(
+                ['xorriso', '-indev', str(self.source_iso), '-report_el_torito', 'as_mkisofs'],
+                capture_output=True, text=True, check=True, timeout=60
+            )
+            boot_args = result.stdout.strip().split('\n')
+            # Filter for the relevant arguments needed for mkisofs
+            boot_args = [arg for arg in boot_args if arg.startswith('-')]
+            logger.info(f"Successfully extracted {len(boot_args)} boot arguments.")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            raise RuntimeError(f"Failed to extract boot information from source ISO: {e.stderr}")
+
+        # 2. Build the final xorriso command.
         cmd = [
             'xorriso', '-as', 'mkisofs',
             '-r', '-V', volume_label,
             '-o', str(self.output_iso),
-            '-J', '-joliet-long',
-            '-cache-inodes'
         ]
         
-        if has_uefi:
-            # Ubuntu 22.04 uses bootx64.efi for EFI boot
-            logger.info("Creating UEFI ISO...")
-            cmd.extend([
-                '-eltorito-alt-boot',
-                '-e', 'EFI/boot/bootx64.efi', 
-                '-no-emul-boot',
-                '-isohybrid-gpt-basdat'
-            ])
-        else:
-            logger.warning("No EFI boot detected, creating basic ISO...")
-            
+        # Add the extracted boot arguments
+        cmd.extend(boot_args)
+        
+        # Add the path to the modified files at the end
         cmd.append(str(self.iso_dir))
         
+        logger.info("Creating new ISO with replicated boot structure...")
+        logger.debug(f"Running command: {' '.join(cmd)}")
+        
         try:
-            logger.info("Creating ISO with detected boot structure...")
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
             
             if result.returncode != 0:
-                logger.warning(f"First attempt failed: {result.stderr}")
-                
-                # Fallback: try the most basic approach that should work
-                logger.info("Trying fallback approach...")
-                cmd_fallback = [
-                    'xorriso', '-as', 'mkisofs',
-                    '-r', '-V', volume_label,
-                    '-o', str(self.output_iso),
-                    '-eltorito-alt-boot',
-                    '-e', 'EFI/boot/bootx64.efi',
-                    '-no-emul-boot',
-                    str(self.iso_dir)
-                ]
-                
-                result = subprocess.run(cmd_fallback, capture_output=True, text=True, timeout=600)
-                
-            if result.returncode != 0:
-                raise RuntimeError(f"ISO creation failed: {result.stderr}")
-                    
+                # Log the error from xorriso for easier debugging
+                logger.error(f"xorriso failed with exit code {result.returncode}")
+                logger.error(f"xorriso stdout: {result.stdout}")
+                logger.error(f"xorriso stderr: {result.stderr}")
+                raise RuntimeError("ISO creation failed. See logs above for details.")
+
             # Verify output
             if not self.output_iso.exists():
                 raise RuntimeError("Output ISO was not created")
