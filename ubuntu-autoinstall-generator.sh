@@ -92,64 +92,83 @@ extract_iso() {
 }
 
 modify_grub_config() {
-    local grub_cfg="$WORKDIR/iso/boot/grub/grub.cfg"
     local autoinstall_params="autoinstall ds=nocloud-net\\;s=http://$PACKER_HTTP_IP:$PACKER_HTTP_PORT/"
+    local modified=false
     
-    if [[ -f "$grub_cfg" ]]; then
-        log "Modifying GRUB configuration..."
-        
-        # Backup original
-        cp "$grub_cfg" "$grub_cfg.bak"
-        
-        # Modify kernel parameters in GRUB config
-        sed -i "s|linux\s*/casper/vmlinuz|linux /casper/vmlinuz $autoinstall_params|g" "$grub_cfg"
-        sed -i "s|linuxefi\s*/casper/vmlinuz|linuxefi /casper/vmlinuz $autoinstall_params|g" "$grub_cfg"
-        
-        log "Added autoinstall parameters to GRUB config"
-    else
-        log "⚠️  GRUB config not found, skipping GRUB modification"
+    # Try multiple GRUB config locations
+    local grub_configs=(
+        "$WORKDIR/iso/boot/grub/grub.cfg"
+        "$WORKDIR/iso/EFI/BOOT/grub.cfg" 
+        "$WORKDIR/iso/boot/grub/loopback.cfg"
+    )
+    
+    for grub_cfg in "${grub_configs[@]}"; do
+        if [[ -f "$grub_cfg" ]]; then
+            log "Modifying GRUB configuration: $(basename "$grub_cfg")"
+            
+            # Backup original
+            cp "$grub_cfg" "${grub_cfg}.bak"
+            
+            # Modify kernel parameters in GRUB config - try multiple patterns
+            sed -i "s|linux\s*/casper/vmlinuz|linux /casper/vmlinuz $autoinstall_params|g" "$grub_cfg"
+            sed -i "s|linuxefi\s*/casper/vmlinuz|linuxefi /casper/vmlinuz $autoinstall_params|g" "$grub_cfg"
+            
+            # Also handle cases where there might already be parameters
+            sed -i "s|vmlinuz\s*\$|vmlinuz $autoinstall_params|g" "$grub_cfg"
+            sed -i "s|vmlinuz file=/cdrom/preseed|vmlinuz $autoinstall_params file=/cdrom/preseed|g" "$grub_cfg"
+            
+            modified=true
+            log "Added autoinstall parameters to $(basename "$grub_cfg")"
+        fi
+    done
+    
+    if [[ "$modified" == false ]]; then
+        log "⚠️  No GRUB config files found in expected locations"
     fi
 }
 
 modify_isolinux_config() {
-    local isolinux_cfg="$WORKDIR/iso/isolinux/isolinux.cfg"
-    local txt_cfg="$WORKDIR/iso/isolinux/txt.cfg"
     local autoinstall_params="autoinstall ds=nocloud-net;s=http://$PACKER_HTTP_IP:$PACKER_HTTP_PORT/"
+    local modified=false
     
-    # Try isolinux.cfg first
-    if [[ -f "$isolinux_cfg" ]]; then
-        log "Modifying isolinux configuration..."
-        cp "$isolinux_cfg" "$isolinux_cfg.bak"
-        sed -i "s|append\s*|append $autoinstall_params |g" "$isolinux_cfg"
-        log "Added autoinstall parameters to isolinux config"
-    fi
+    # Try multiple isolinux config locations
+    local isolinux_configs=(
+        "$WORKDIR/iso/isolinux/isolinux.cfg"
+        "$WORKDIR/iso/isolinux/txt.cfg"
+        "$WORKDIR/iso/syslinux/isolinux.cfg"
+        "$WORKDIR/iso/syslinux/txt.cfg"
+    )
     
-    # Also try txt.cfg which is common in Ubuntu ISOs
-    if [[ -f "$txt_cfg" ]]; then
-        log "Modifying txt.cfg configuration..."
-        cp "$txt_cfg" "$txt_cfg.bak"
-        sed -i "s|append\s*|append $autoinstall_params |g" "$txt_cfg"
-        log "Added autoinstall parameters to txt.cfg"
-    fi
+    for config_file in "${isolinux_configs[@]}"; do
+        if [[ -f "$config_file" ]]; then
+            log "Modifying isolinux configuration: $(basename "$config_file")"
+            cp "$config_file" "${config_file}.bak"
+            sed -i "s|append\s*|append $autoinstall_params |g" "$config_file"
+            modified=true
+            log "Added autoinstall parameters to $(basename "$config_file")"
+        fi
+    done
     
-    if [[ ! -f "$isolinux_cfg" && ! -f "$txt_cfg" ]]; then
-        log "⚠️  No isolinux config files found, skipping isolinux modification"
+    if [[ "$modified" == false ]]; then
+        log "ℹ️  No isolinux config files found (normal for modern UEFI ISOs)"
     fi
 }
 
 modify_boot_configs() {
-    case "$FORMAT" in
-        "Live Server"|"GRUB EFI")
-            modify_grub_config
-            modify_isolinux_config  # Many ISOs have both
-            ;;
-        "Legacy Boot")
-            modify_isolinux_config
-            ;;
-        *)
-            error "Unsupported ISO format for modification"
-            ;;
-    esac
+    log "Attempting to modify all boot configurations..."
+    
+    # Always try both GRUB and isolinux modifications
+    # Modern ISOs may have GRUB only, older ones may have both
+    modify_grub_config
+    modify_isolinux_config
+    
+    # Additional check for any missed boot configs
+    find "$WORKDIR/iso" -name "*.cfg" -path "*/boot/*" -o -name "*.cfg" -path "*/EFI/*" | while read -r cfg_file; do
+        if [[ ! "$cfg_file" == *".bak" ]]; then
+            log "Found additional boot config: $cfg_file"
+            # You could add more specific modifications here if needed
+        fi
+    done
 }
 
 create_iso() {
@@ -158,40 +177,29 @@ create_iso() {
     # Get original ISO volume label
     VOLUME_LABEL=$(xorriso -indev "$ISO" -report_about NOTE 2>/dev/null | grep "Volume id" | cut -d"'" -f2 || echo "Ubuntu")
     
-    case "$FORMAT" in
-        "Live Server"|"GRUB EFI")
-            # Create hybrid ISO with both BIOS and UEFI support
-            xorriso -as mkisofs \
-                -r -V "$VOLUME_LABEL" \
-                -J -joliet-long \
-                -cache-inodes \
-                -b isolinux/isolinux.bin \
-                -c isolinux/boot.cat \
-                -no-emul-boot \
-                -boot-load-size 4 \
-                -boot-info-table \
-                -eltorito-alt-boot \
-                -e boot/grub/efi.img \
-                -no-emul-boot \
-                -isohybrid-gpt-basdat \
-                -o "$DEST" \
-                "$WORKDIR/iso/" 2>/dev/null
-            ;;
-        "Legacy Boot")
-            # Create BIOS-only ISO
-            xorriso -as mkisofs \
-                -r -V "$VOLUME_LABEL" \
-                -J -joliet-long \
-                -cache-inodes \
-                -b isolinux/isolinux.bin \
-                -c isolinux/boot.cat \
-                -no-emul-boot \
-                -boot-load-size 4 \
-                -boot-info-table \
-                -o "$DEST" \
-                "$WORKDIR/iso/" 2>/dev/null
-            ;;
-    esac
+    # Try to detect and preserve the original ISO boot structure
+    local xorriso_cmd="xorriso -as mkisofs -r -V \"$VOLUME_LABEL\" -J -joliet-long -cache-inodes"
+    
+    # Check if EFI boot image exists
+    if [[ -f "$WORKDIR/iso/boot/grub/efi.img" ]]; then
+        log "Found EFI boot image, creating hybrid UEFI/BIOS ISO..."
+        xorriso_cmd="$xorriso_cmd -eltorito-boot isolinux/isolinux.bin -eltorito-catalog isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table -eltorito-alt-boot -eltorito-platform efi -eltorito-boot boot/grub/efi.img -no-emul-boot -isohybrid-gpt-basdat"
+    elif [[ -f "$WORKDIR/iso/EFI/BOOT/bootx64.efi" ]]; then
+        log "Found UEFI bootloader, creating UEFI ISO..."
+        xorriso_cmd="$xorriso_cmd -eltorito-alt-boot -eltorito-platform efi -eltorito-boot EFI/BOOT/bootx64.efi -no-emul-boot"
+    elif [[ -f "$WORKDIR/iso/isolinux/isolinux.bin" ]]; then
+        log "Found isolinux, creating BIOS ISO..."
+        xorriso_cmd="$xorriso_cmd -eltorito-boot isolinux/isolinux.bin -eltorito-catalog isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table"
+    else
+        log "⚠️  No specific boot method detected, using basic ISO creation..."
+    fi
+    
+    # Execute the xorriso command
+    eval "$xorriso_cmd -o \"$DEST\" \"$WORKDIR/iso/\"" 2>/dev/null || {
+        log "⚠️  Standard ISO creation failed, trying alternative method..."
+        # Fallback method
+        xorriso -as mkisofs -r -V "$VOLUME_LABEL" -o "$DEST" "$WORKDIR/iso/" 2>/dev/null
+    }
 }
 
 build_output() {
