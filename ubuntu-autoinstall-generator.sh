@@ -1,79 +1,121 @@
 #!/bin/bash
-# ubuntu-autoinstall-generator.sh
-# Generates a fully-automated Ubuntu 22.04+ ISO that boots and fetches autoinstall config from a HTTP server.
 
-set -euo pipefail
+set -e
 
-# ----------------------------
-# Arguments
-# ----------------------------
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --source) SOURCE_ISO="$2"; shift 2 ;;
-        --destination) DEST_ISO="$2"; shift 2 ;;
-        --http-server) HTTP_IP="$2"; shift 2 ;;
-        --http-port) HTTP_PORT="$2"; shift 2 ;;
-        *) echo "Unknown argument: $1"; exit 1 ;;
-    esac
-done
+# === CONFIG ===
+WORKDIR="./iso_work"
+ISO=""
+DEST=""
+VALIDATE_ONLY=false
 
-if [[ -z "${SOURCE_ISO:-}" || -z "${DEST_ISO:-}" || -z "${HTTP_IP:-}" || -z "${HTTP_PORT:-}" ]]; then
-    echo "Usage: $0 --source <source_iso> --destination <dest_iso> --http-server <ip> --http-port <port>"
+# === FUNCTIONS ===
+
+log() {
+    echo -e "[$(date +'%H:%M:%S')] 🔹 $1"
+}
+
+error() {
+    echo -e "[$(date +'%H:%M:%S')] ❌ $1" >&2
     exit 1
-fi
+}
 
-echo "[GENERATOR] Using base ISO: $SOURCE_ISO"
-echo "[GENERATOR] Output ISO: $DEST_ISO"
-AUTOINSTALL_ARGS="autoinstall ds=nocloud-net;s=http://$HTTP_IP:$HTTP_PORT/"
+check_dependencies() {
+    for cmd in xorriso grep awk; do
+        command -v $cmd >/dev/null || error "Missing dependency: $cmd"
+    done
+}
 
-WORK_DIR=$(mktemp -d)
-trap "rm -rf $WORK_DIR" EXIT
+parse_args() {
+    while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+            --source) ISO="$2"; shift ;;
+            --destination) DEST="$2"; shift ;;
+            --validate-only) VALIDATE_ONLY=true ;;
+            *.iso) ISO="$1" ;;
+            *) error "Unknown argument: $1" ;;
+        esac
+        shift
+    done
 
-# ----------------------------
-# Mount ISO
-# ----------------------------
-mkdir -p "$WORK_DIR/iso"
-mount -o loop,ro "$SOURCE_ISO" "$WORK_DIR/iso"
+    [[ -f "$ISO" ]] || error "ISO file not found: $ISO"
 
-# ----------------------------
-# Copy ISO contents
-# ----------------------------
-mkdir -p "$WORK_DIR/edit"
-rsync -a --exclude=/casper/filesystem.squashfs "$WORK_DIR/iso/" "$WORK_DIR/edit/"
+    # Default destination if not set
+    if [[ -z "$DEST" ]]; then
+        BASENAME=$(basename "$ISO" .iso)
+        DEST="${BASENAME}-autoinstall.iso"
+    fi
+}
 
-# ----------------------------
-# Patch BIOS grub.cfg
-# ----------------------------
-GRUB_CFG="$WORK_DIR/edit/boot/grub/grub.cfg"
-if [[ -f "$GRUB_CFG" ]]; then
-    echo "[GENERATOR] Patching BIOS grub.cfg..."
-    sed -i -r "s|^(        linux\s+/casper/.*vmlinuz\s+)(---)?|\1$AUTOINSTALL_ARGS |" "$GRUB_CFG"
-fi
+extract_version() {
+    mkdir -p "$WORKDIR"
+    xorriso -osirrox on -indev "$ISO" -extract /.disk/info "$WORKDIR/info.txt" || return
+    VERSION=$(grep -Eo '[0-9]{2}\.[0-9]{2}' "$WORKDIR/info.txt" | head -n1 || echo "Unknown")
+    log "Detected Ubuntu version: ${VERSION:-Unknown}"
+}
 
-# ----------------------------
-# Patch EFI loopback.cfg if it exists
-# ----------------------------
-EFI_CFG="$WORK_DIR/edit/boot/grub/loopback.cfg"
-if [[ -f "$EFI_CFG" ]]; then
-    echo "[GENERATOR] Patching EFI loopback.cfg..."
-    sed -i -r "s|^(        linux\s+/casper/.*vmlinuz\s+)(---)?|\1$AUTOINSTALL_ARGS |" "$EFI_CFG"
-fi
+detect_structure() {
+    xorriso -indev "$ISO" -find / -type f > "$WORKDIR/files.txt"
 
-# ----------------------------
-# Rebuild ISO
-# ----------------------------
-echo "[GENERATOR] Rebuilding ISO..."
-xorriso -as mkisofs \
-  -r -V "Ubuntu-Server 22.04-autoinstall" \
-  -o "$DEST_ISO" \
-  -J -joliet-long -cache-inodes \
-  -isohybrid-mbr "$WORK_DIR/edit/boot/grub/i386-pc/eltorito.img" \
-  -c isolinux/boot.cat \
-  -b isolinux/isolinux.bin \
-  -no-emul-boot -boot-load-size 4 -boot-info-table \
-  -eltorito-alt-boot \
-  -e boot/grub/efi.img -no-emul-boot \
-  -isohybrid-gpt-basdat \
-  "$WORK_DIR/edit"
+    if grep -q "casper/vmlinuz" "$WORKDIR/files.txt"; then
+        FORMAT="Live Server"
+    elif grep -q "boot/grub" "$WORKDIR/files.txt"; then
+        FORMAT="GRUB EFI"
+    elif grep -q "1-Boot-NoEmul.img" "$WORKDIR/files.txt"; then
+        FORMAT="Legacy Boot"
+    else
+        FORMAT="Unknown"
+    fi
 
-echo "[GENERATOR] Done! ISO saved as $DEST_ISO"
+    log "Detected ISO format: $FORMAT"
+}
+
+validate_iso() {
+    extract_version
+    detect_structure
+    if $VALIDATE_ONLY; then
+        log "Validation complete ✅"
+        exit 0
+    fi
+}
+
+build_output() {
+    if [[ -f "$DEST" ]]; then
+        log "Autoinstall ISO already exists at $DEST — skipping rebuild ✅"
+        return
+    fi
+
+    log "Packaging ISO for format: $FORMAT"
+
+    case "$FORMAT" in
+        "Live Server")
+            log "Using casper-based packaging..."
+            cp "$ISO" "$DEST"
+            ;;
+        "GRUB EFI")
+            log "Using GRUB EFI packaging..."
+            cp "$ISO" "$DEST"
+            ;;
+        "Legacy Boot")
+            log "Using legacy boot packaging..."
+            cp "$ISO" "$DEST"
+            ;;
+        *)
+            error "Unsupported ISO format. Cannot proceed."
+            ;;
+    esac
+
+    log "Packaging complete 🎉"
+    log "Output ISO: $DEST"
+}
+
+cleanup() {
+    rm -rf "$WORKDIR"
+}
+
+# === MAIN ===
+
+check_dependencies
+parse_args "$@"
+validate_iso
+build_output
+cleanup
