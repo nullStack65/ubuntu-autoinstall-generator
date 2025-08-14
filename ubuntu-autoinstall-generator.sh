@@ -84,6 +84,7 @@ validate_iso() {
 
 # === PATCHING FUNCTION ===
 # Uses xorriso -map to override the in-ISO boot config without full re-extract
+# === PATCHING FUNCTION ===
 patch_kernel_params() {
   local path_in_iso cfg_local tmp_iso
 
@@ -104,9 +105,9 @@ patch_kernel_params() {
   xorriso -osirrox on -indev "$DEST" \
     -extract "$path_in_iso" "$cfg_local"
 
-  # Use '#' as sed delimiter so our "http://…/" doesn’t confuse it,
-  # then append BOOT_PARAMS at the end of every linux line.
-  sed -Ei 's#^( *linux .*)#\1 '"${BOOT_PARAMS}"'#' "$cfg_local"
+  # Use sed to find the "linux" line and replace the "---" with the autoinstall parameters + "---"
+  # This ensures the parameters are in the correct position for the Ubuntu installer.
+  sed -i "s|^\( *linux .*\)---$|\1 ${BOOT_PARAMS}---|" "$cfg_local"
 
   # Remap the single patched file back into the ISO
   tmp_iso="${DEST%.iso}-tmp.iso"
