@@ -86,6 +86,7 @@ validate_iso() {
 # Uses xorriso -map to override the in-ISO boot config without full re-extract
 patch_kernel_params() {
   local path_in_iso cfg_local tmp_iso
+
   case "$FORMAT" in
     "Live Server"|"GRUB EFI")
       path_in_iso="/boot/grub/grub.cfg"
@@ -98,15 +99,16 @@ patch_kernel_params() {
       ;;
   esac
 
-  # Extract only the config file
+  # Extract just the boot config so we only rewrite one file
   cfg_local="$WORKDIR/boot.cfg"
   xorriso -osirrox on -indev "$DEST" \
     -extract "$path_in_iso" "$cfg_local"
 
-  # Inject our BOOT_PARAMS on any 'linux' line
-  sed -Ei "s|^( *linux .*)(quiet|---|$)|\1 $BOOT_PARAMS \2|" "$cfg_local"
+  # Use '#' as sed delimiter so our "http://…/" doesn’t confuse it,
+  # then append BOOT_PARAMS at the end of every linux line.
+  sed -Ei 's#^( *linux .*)#\1 '"${BOOT_PARAMS}"'#' "$cfg_local"
 
-  # Re-map it over the ISO, producing a new ISO in tmp_iso
+  # Remap the single patched file back into the ISO
   tmp_iso="${DEST%.iso}-tmp.iso"
   xorriso -indev "$DEST" \
           -outdev "$tmp_iso" \
@@ -115,6 +117,7 @@ patch_kernel_params() {
   mv "$tmp_iso" "$DEST"
   log "Patched kernel params in $path_in_iso"
 }
+
 
 # === ISO REBUILD ===
 build_output() {
