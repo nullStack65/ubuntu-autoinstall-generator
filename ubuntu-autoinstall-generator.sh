@@ -79,12 +79,16 @@ validate_iso() {
 }
 
 build_output() {
+    if [[ -f "$DEST" ]]; then
+        log "Autoinstall ISO already exists at $DEST — skipping rebuild ✅"
+        return
+    fi
+
     log "Packaging ISO for format: $FORMAT"
 
     case "$FORMAT" in
         "Live Server")
             log "Using casper-based packaging..."
-            # Placeholder logic — replace with actual packaging steps
             cp "$ISO" "$DEST"
             ;;
         "GRUB EFI")
