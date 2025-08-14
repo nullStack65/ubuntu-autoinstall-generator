@@ -20,7 +20,7 @@ error() {
 }
 
 check_dependencies() {
-    for cmd in xorriso grep awk; do
+    for cmd in xorriso grep awk sed; do
         command -v $cmd >/dev/null || error "Missing dependency: $cmd"
     done
 }
@@ -39,7 +39,6 @@ parse_args() {
 
     [[ -f "$ISO" ]] || error "ISO file not found: $ISO"
 
-    # Default destination if not set
     if [[ -z "$DEST" ]]; then
         BASENAME=$(basename "$ISO" .iso)
         DEST="${BASENAME}-autoinstall.iso"
@@ -69,6 +68,28 @@ detect_structure() {
     log "Detected ISO format: $FORMAT"
 }
 
+inject_kernel_args() {
+    log "Injecting autoinstall kernel parameters..."
+
+    mkdir -p "$WORKDIR/iso"
+    xorriso -osirrox on -indev "$ISO" -extract / "$WORKDIR/iso"
+
+    GRUB_CFG="$WORKDIR/iso/boot/grub/grub.cfg"
+    if [[ -f "$GRUB_CFG" ]]; then
+        sed -i '/linux / s/$/ autoinstall ds=nocloud-net;s=http:\/\/{{ .HTTPIP }}:{{ .HTTPPort }}\//' "$GRUB_CFG"
+        log "Kernel parameters injected into grub.cfg"
+    else
+        error "Could not find grub.cfg to inject kernel parameters"
+    fi
+
+    xorriso -as mkisofs -o "$DEST" \
+        -isohybrid-mbr "$WORKDIR/iso/isolinux/isohdpfx.bin" \
+        -c isolinux/boot.cat -b isolinux/isolinux.bin \
+        -no-emul-boot -boot-load-size 4 -boot-info-table \
+        -eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot \
+        -isohybrid-gpt-basdat -V "Ubuntu Autoinstall" "$WORKDIR/iso"
+}
+
 validate_iso() {
     extract_version
     detect_structure
@@ -88,15 +109,12 @@ build_output() {
 
     case "$FORMAT" in
         "Live Server")
-            log "Using casper-based packaging..."
-            cp "$ISO" "$DEST"
+            inject_kernel_args
             ;;
         "GRUB EFI")
-            log "Using GRUB EFI packaging..."
             cp "$ISO" "$DEST"
             ;;
         "Legacy Boot")
-            log "Using legacy boot packaging..."
             cp "$ISO" "$DEST"
             ;;
         *)
