@@ -92,7 +92,12 @@ extract_iso() {
 }
 
 modify_grub_config() {
+    # Option 1: nocloud-net (requires both user-data and meta-data)
     local autoinstall_params="autoinstall ds=nocloud-net;s=http://$PACKER_HTTP_IP:$PACKER_HTTP_PORT/"
+    
+    # Option 2: Direct user-data URL (comment out line above and uncomment below to use this instead)
+    # local autoinstall_params="autoinstall ds=nocloud-net\\;seedfrom=http://$PACKER_HTTP_IP:$PACKER_HTTP_PORT/user-data"
+    
     local modified=false
     
     # Try multiple GRUB config locations
@@ -184,32 +189,91 @@ modify_boot_configs() {
 create_iso() {
     log "Creating new ISO with autoinstall parameters..."
     
-    # Get original ISO volume label
+    # Get original ISO volume label and boot info
     VOLUME_LABEL=$(xorriso -indev "$ISO" -report_about NOTE 2>/dev/null | grep "Volume id" | cut -d"'" -f2 || echo "Ubuntu")
     
-    # Try to detect and preserve the original ISO boot structure
-    local xorriso_cmd="xorriso -as mkisofs -r -V \"$VOLUME_LABEL\" -J -joliet-long -cache-inodes"
+    # Extract the exact boot configuration from the original ISO
+    log "Analyzing original ISO boot structure..."
+    xorriso -indev "$ISO" -report_el_torito as_mkisofs 2>/dev/null > "$WORKDIR/boot_info.txt" || true
     
-    # Check if EFI boot image exists
-    if [[ -f "$WORKDIR/iso/boot/grub/efi.img" ]]; then
-        log "Found EFI boot image, creating hybrid UEFI/BIOS ISO..."
-        xorriso_cmd="$xorriso_cmd -eltorito-boot isolinux/isolinux.bin -eltorito-catalog isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table -eltorito-alt-boot -eltorito-platform efi -eltorito-boot boot/grub/efi.img -no-emul-boot -isohybrid-gpt-basdat"
-    elif [[ -f "$WORKDIR/iso/EFI/BOOT/bootx64.efi" ]]; then
-        log "Found UEFI bootloader, creating UEFI ISO..."
-        xorriso_cmd="$xorriso_cmd -eltorito-alt-boot -eltorito-platform efi -eltorito-boot EFI/BOOT/bootx64.efi -no-emul-boot"
+    # Try to replicate the original Ubuntu ISO structure exactly
+    if [[ -f "$WORKDIR/iso/boot/grub/efi.img" ]] && [[ -f "$WORKDIR/iso/isolinux/isolinux.bin" ]]; then
+        # Hybrid UEFI/BIOS like original Ubuntu ISOs
+        log "Creating hybrid UEFI/BIOS ISO (Ubuntu-style)..."
+        xorriso -as mkisofs \
+            -r -V "$VOLUME_LABEL" \
+            -o "$DEST" \
+            -J -joliet-long \
+            -cache-inodes \
+            -b isolinux/isolinux.bin \
+            -c isolinux/boot.cat \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            -eltorito-alt-boot \
+            -e boot/grub/efi.img \
+            -no-emul-boot \
+            -isohybrid-gpt-basdat \
+            "$WORKDIR/iso/" 2>/dev/null
+    elif [[ -f "$WORKDIR/iso/boot/grub/efi.img" ]]; then
+        # UEFI only
+        log "Creating UEFI-only ISO..."
+        xorriso -as mkisofs \
+            -r -V "$VOLUME_LABEL" \
+            -o "$DEST" \
+            -J -joliet-long \
+            -cache-inodes \
+            -eltorito-alt-boot \
+            -e boot/grub/efi.img \
+            -no-emul-boot \
+            -isohybrid-gpt-basdat \
+            "$WORKDIR/iso/" 2>/dev/null
     elif [[ -f "$WORKDIR/iso/isolinux/isolinux.bin" ]]; then
-        log "Found isolinux, creating BIOS ISO..."
-        xorriso_cmd="$xorriso_cmd -eltorito-boot isolinux/isolinux.bin -eltorito-catalog isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table"
+        # BIOS only
+        log "Creating BIOS-only ISO..."
+        xorriso -as mkisofs \
+            -r -V "$VOLUME_LABEL" \
+            -o "$DEST" \
+            -J -joliet-long \
+            -cache-inodes \
+            -b isolinux/isolinux.bin \
+            -c isolinux/boot.cat \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            "$WORKDIR/iso/" 2>/dev/null
     else
-        log "⚠️  No specific boot method detected, using basic ISO creation..."
+        # Try to copy the exact boot structure from original
+        log "⚠️  Using advanced boot structure detection..."
+        if [[ -s "$WORKDIR/boot_info.txt" ]]; then
+            log "Attempting to replicate original boot configuration..."
+            # Extract the mkisofs command from the original analysis
+            BOOT_ARGS=$(grep -o "\-[be] [^[:space:]]*" "$WORKDIR/boot_info.txt" | tr '\n' ' ' || echo "")
+            if [[ -n "$BOOT_ARGS" ]]; then
+                xorriso -as mkisofs \
+                    -r -V "$VOLUME_LABEL" \
+                    -o "$DEST" \
+                    -J -joliet-long \
+                    -cache-inodes \
+                    $BOOT_ARGS \
+                    "$WORKDIR/iso/" 2>/dev/null
+            else
+                log "⚠️  Falling back to basic ISO creation..."
+                xorriso -as mkisofs -r -V "$VOLUME_LABEL" -o "$DEST" "$WORKDIR/iso/" 2>/dev/null
+            fi
+        else
+            log "⚠️  Falling back to basic ISO creation..."
+            xorriso -as mkisofs -r -V "$VOLUME_LABEL" -o "$DEST" "$WORKDIR/iso/" 2>/dev/null
+        fi
     fi
     
-    # Execute the xorriso command
-    eval "$xorriso_cmd -o \"$DEST\" \"$WORKDIR/iso/\"" 2>/dev/null || {
-        log "⚠️  Standard ISO creation failed, trying alternative method..."
-        # Fallback method
-        xorriso -as mkisofs -r -V "$VOLUME_LABEL" -o "$DEST" "$WORKDIR/iso/" 2>/dev/null
-    }
+    # Verify the created ISO
+    if [[ ! -f "$DEST" ]]; then
+        error "Failed to create ISO file"
+    fi
+    
+    log "Verifying created ISO boot structure..."
+    xorriso -indev "$DEST" -report_about NOTE 2>/dev/null | grep -E "(Boot record|Volume id)" || log "⚠️  Could not verify boot structure"
 }
 
 build_output() {
@@ -220,6 +284,10 @@ build_output() {
 
     log "Building autoinstall ISO for format: $FORMAT"
     log "Packer HTTP server: $PACKER_HTTP_IP:$PACKER_HTTP_PORT"
+    log "⚠️  IMPORTANT: Make sure your Packer HTTP server serves both:"
+    log "   - http://$PACKER_HTTP_IP:$PACKER_HTTP_PORT/user-data"
+    log "   - http://$PACKER_HTTP_IP:$PACKER_HTTP_PORT/meta-data"
+    log "   The meta-data file can be empty but must exist!"
 
     extract_iso
     modify_boot_configs
@@ -227,7 +295,7 @@ build_output() {
 
     log "Packaging complete 🎉"
     log "Output ISO: $DEST"
-    log "The ISO will fetch user-data from: http://$PACKER_HTTP_IP:$PACKER_HTTP_PORT/user-data"
+    log "The ISO will fetch autoinstall config from: http://$PACKER_HTTP_IP:$PACKER_HTTP_PORT/"
 }
 
 cleanup() {
