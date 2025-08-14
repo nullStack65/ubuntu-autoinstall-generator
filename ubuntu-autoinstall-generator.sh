@@ -4,12 +4,27 @@ set -e
 
 # === CONFIG ===
 WORKDIR="./iso_work"
-OUTPUT="./output"
 ISO=""
 DEST=""
 VALIDATE_ONLY=false
 
-# === ARG PARSING ===
+# === FUNCTIONS ===
+
+log() {
+    echo -e "[$(date +'%H:%M:%S')] 🔹 $1"
+}
+
+error() {
+    echo -e "[$(date +'%H:%M:%S')] ❌ $1" >&2
+    exit 1
+}
+
+check_dependencies() {
+    for cmd in xorriso grep awk; do
+        command -v $cmd >/dev/null || error "Missing dependency: $cmd"
+    done
+}
+
 parse_args() {
     while [[ "$#" -gt 0 ]]; do
         case "$1" in
@@ -31,29 +46,11 @@ parse_args() {
     fi
 }
 
-
-# === FUNCTIONS ===
-
-log() {
-    echo -e "[$(date +'%H:%M:%S')] 🔹 $1"
-}
-
-error() {
-    echo -e "[$(date +'%H:%M:%S')] ❌ $1" >&2
-    exit 1
-}
-
-check_dependencies() {
-    for cmd in xorriso grep awk; do
-        command -v $cmd >/dev/null || error "Missing dependency: $cmd"
-    done
-}
-
 extract_version() {
     mkdir -p "$WORKDIR"
     xorriso -osirrox on -indev "$ISO" -extract /.disk/info "$WORKDIR/info.txt" || return
-    VERSION=$(grep -oP 'Ubuntu \K[0-9]+\.[0-9]+' "$WORKDIR/info.txt" || echo "Unknown")
-    log "Detected Ubuntu version: $VERSION"
+    VERSION=$(grep -Eo '[0-9]{2}\.[0-9]{2}' "$WORKDIR/info.txt" | head -n1 || echo "Unknown")
+    log "Detected Ubuntu version: ${VERSION:-Unknown}"
 }
 
 detect_structure() {
@@ -82,42 +79,33 @@ validate_iso() {
 }
 
 build_output() {
-    mkdir -p "$OUTPUT"
+    if [[ -f "$DEST" ]]; then
+        log "Autoinstall ISO already exists at $DEST — skipping rebuild ✅"
+        return
+    fi
+
     log "Packaging ISO for format: $FORMAT"
-    
-    # Create temporary directory for extraction
-    local temp_dir=$(mktemp -d)
-    
-    # Extract ISO contents to temp_dir
-    xorriso -osirrox on -indev "$ISO" -extract / "$temp_dir" || error "Failed to extract ISO"
-    
-    # Example modification: Adding autoinstall parameter
-    # Edit the grub.cfg or isolinux/txt.cfg file to add "autoinstall" to the boot parameters
-    # This part requires specific knowledge of the bootloader's configuration format.
-    
-    # Example: Copy autoinstall files
-    # mkdir -p "$temp_dir/autoinstall"
-    # cp "$autoinstall_files/user-data" "$temp_dir/autoinstall/"
-    # cp "$autoinstall_files/meta-data" "$temp_dir/autoinstall/"
-    
-    # Create the new ISO with xorriso
-    xorriso -as mkisofs \
-        -r -V "Ubuntu-autoinstall" \
-        -o "$DEST" \
-        -J -l -b isolinux/isolinux.bin \
-        -c isolinux/boot.cat -no-emul-boot \
-        -boot-load-size 4 -boot-info-table \
-        --grub2-boot-info \
-        -eltorito-alt-boot \
-        -e boot/grub/efi.img \
-        -no-emul-boot \
-        -isohybrid-gpt-basdat \
-        "$temp_dir" || error "Failed to create new ISO"
-    
-    # Clean up
-    rm -rf "$temp_dir"
-    
+
+    case "$FORMAT" in
+        "Live Server")
+            log "Using casper-based packaging..."
+            cp "$ISO" "$DEST"
+            ;;
+        "GRUB EFI")
+            log "Using GRUB EFI packaging..."
+            cp "$ISO" "$DEST"
+            ;;
+        "Legacy Boot")
+            log "Using legacy boot packaging..."
+            cp "$ISO" "$DEST"
+            ;;
+        *)
+            error "Unsupported ISO format. Cannot proceed."
+            ;;
+    esac
+
     log "Packaging complete 🎉"
+    log "Output ISO: $DEST"
 }
 
 cleanup() {
