@@ -56,8 +56,11 @@ extract_version() {
 }
 
 detect_structure() {
+  log "Scanning ISO file list..."
+  mkdir -p "$WORKDIR"
   xorriso -indev "$ISO" -find / -type f > "$WORKDIR/files.txt"
 
+  # Detect format
   if grep -q "casper/vmlinuz" "$WORKDIR/files.txt"; then
     FORMAT="Live Server"
   elif grep -q "boot/grub" "$WORKDIR/files.txt"; then
@@ -69,19 +72,42 @@ detect_structure() {
   fi
   log "Detected ISO format: $FORMAT"
 
-  # Try to locate grub.cfg dynamically, fallback to known Live Server path
-  GRUB_PATH=$(grep -E '/boot/grub/grub.cfg$' "$WORKDIR/files.txt" | head -n1 || true)
+  # Try to locate grub.cfg directly in ISO tree
+  GRUB_PATH=$(grep -E '/grub\.cfg$' "$WORKDIR/files.txt" | head -n1 || true)
+
+  if [[ -n "$GRUB_PATH" ]]; then
+    log "Found grub.cfg in main ISO at: $GRUB_PATH"
+    return
+  fi
+
+  log "No grub.cfg found in main ISO — checking EFI boot image..."
+
+  # Extract EFI boot image
+  mkdir -p "$WORKDIR/efi"
+  # This path can vary, but most Ubuntu ISOs have [BOOT]/1 or /boot/grub/efi.img
+  EFI_IMAGE=$(
+    grep -E '/boot/grub/efi\.img$|^\[BOOT\]/1$' "$WORKDIR/files.txt" | head -n1 || true
+  )
+
+  if [[ -z "$EFI_IMAGE" ]]; then
+    error "Could not locate EFI image in ISO to search for grub.cfg"
+  fi
+
+  log "Extracting EFI image: $EFI_IMAGE"
+  xorriso -osirrox on -indev "$ISO" -extract "$EFI_IMAGE" "$WORKDIR/boot.img"
+
+  # Mount EFI image and search inside
+  mkdir -p "$WORKDIR/efimnt"
+  sudo mount -o loop "$WORKDIR/boot.img" "$WORKDIR/efimnt" || error "Failed to mount EFI image"
+  GRUB_PATH=$(find "$WORKDIR/efimnt" -name grub.cfg | head -n1 || true)
+
+  sudo umount "$WORKDIR/efimnt"
 
   if [[ -z "$GRUB_PATH" ]]; then
-    log "⚠️ grub.cfg not found via grep — falling back to default path for Live Server"
-    GRUB_PATH="/boot/grub/grub.cfg"
+    error "Could not locate grub.cfg in EFI image."
   fi
 
-  if ! grep -Fxq "$GRUB_PATH" "$WORKDIR/files.txt"; then
-    error "Could not locate grub.cfg at expected path: $GRUB_PATH"
-  fi
-
-  log "Located grub.cfg at: $GRUB_PATH"
+  log "Found grub.cfg inside EFI image at: $GRUB_PATH"
 }
 
 validate_iso() {
