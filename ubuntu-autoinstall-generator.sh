@@ -84,25 +84,39 @@ validate_iso() {
 build_output() {
     mkdir -p "$OUTPUT"
     log "Packaging ISO for format: $FORMAT"
-
-    case "$FORMAT" in
-        "Live Server")
-            log "Using casper-based packaging..."
-            # Insert packaging logic here
-            ;;
-        "GRUB EFI")
-            log "Using GRUB EFI packaging..."
-            # Insert packaging logic here
-            ;;
-        "Legacy Boot")
-            log "Using legacy boot packaging..."
-            # Insert packaging logic here
-            ;;
-        *)
-            error "Unsupported ISO format. Cannot proceed."
-            ;;
-    esac
-
+    
+    # Create temporary directory for extraction
+    local temp_dir=$(mktemp -d)
+    
+    # Extract ISO contents to temp_dir
+    xorriso -osirrox on -indev "$ISO" -extract / "$temp_dir" || error "Failed to extract ISO"
+    
+    # Example modification: Adding autoinstall parameter
+    # Edit the grub.cfg or isolinux/txt.cfg file to add "autoinstall" to the boot parameters
+    # This part requires specific knowledge of the bootloader's configuration format.
+    
+    # Example: Copy autoinstall files
+    # mkdir -p "$temp_dir/autoinstall"
+    # cp "$autoinstall_files/user-data" "$temp_dir/autoinstall/"
+    # cp "$autoinstall_files/meta-data" "$temp_dir/autoinstall/"
+    
+    # Create the new ISO with xorriso
+    xorriso -as mkisofs \
+        -r -V "Ubuntu-autoinstall" \
+        -o "$DEST" \
+        -J -l -b isolinux/isolinux.bin \
+        -c isolinux/boot.cat -no-emul-boot \
+        -boot-load-size 4 -boot-info-table \
+        --grub2-boot-info \
+        -eltorito-alt-boot \
+        -e boot/grub/efi.img \
+        -no-emul-boot \
+        -isohybrid-gpt-basdat \
+        "$temp_dir" || error "Failed to create new ISO"
+    
+    # Clean up
+    rm -rf "$temp_dir"
+    
     log "Packaging complete 🎉"
 }
 
