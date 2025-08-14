@@ -3,7 +3,7 @@
 # --- Configuration ---
 ISO_SOURCE="/var/lib/vz/template/iso/ubuntu-22.04.4-live-server-amd64.iso"
 ISO_DESTINATION="/var/lib/vz/template/iso/ubuntu-22.04-autoinstall.iso"
-PYTHON_SCRIPT="./ubuntu-autoinstall-generator/ubuntu_autoinstall.py"
+PYTHON_SCRIPT="./ubuntu-autoinstall-generator/ubuntu-autoinstall-generator.py"
 HTTP_SERVER="192.168.0.250"
 HTTP_PORT="8000"
 MOUNT_POINT="/mnt/iso_test"
@@ -47,7 +47,7 @@ if [[ ! -f "$PYTHON_SCRIPT" ]]; then
     echo -e "${YELLOW}[TEST.SH]${NC} Looking for alternative script names..."
     
     # Try alternative names
-    for alt_name in "ubuntu_autoinstall.py" "autoinstall_builder.py" "build_iso.py"; do
+    for alt_name in "ubuntu-autoinstall-generator.py" "ubuntu_autoinstall.py" "autoinstall_builder.py" "build_iso.py"; do
         alt_path="./ubuntu-autoinstall-generator/$alt_name"
         if [[ -f "$alt_path" ]]; then
             PYTHON_SCRIPT="$alt_path"
