@@ -18,7 +18,7 @@ usage() {
 }
 
 check_dependencies() {
-  for cmd in xorriso grep awk sed; do
+  for cmd in xorriso grep awk; do
     command -v "$cmd" >/dev/null || error "Missing dependency: $cmd"
   done
 }
@@ -60,7 +60,7 @@ extract_version() {
 
 detect_structure() {
   mkdir -p "$WORKDIR"
-  xorriso -indev "$ISO" -find / -type f > "$WORKDIR/files.txt"
+  xorriso -indev "$ISO" -find / -type f > "$WORKDIR/files.txt" || true
   if grep -q "casper/vmlinuz" "$WORKDIR/files.txt"; then
     FORMAT="Live Server"
   elif grep -q "boot/grub" "$WORKDIR/files.txt"; then
@@ -89,9 +89,8 @@ collect_candidate_cfgs() {
     /\/(boot\/grub|grub)\// && /\.cfg$/ {print}
     /\/isolinux\/txt\.cfg$/             {print}
     /\/syslinux\/.*\.cfg$/              {print}
-  ' "$WORKDIR/files.txt" | sort -u > "$WORKDIR/candidates.txt"
+  ' "$WORKDIR/files.txt" 2>/dev/null | sort -u > "$WORKDIR/candidates.txt" || true
 
-  # Add common fallbacks explicitly (in case Rock Ridge listings are odd)
   {
     echo "/boot/grub/grub.cfg"
     echo "/boot/grub/loopback.cfg"
@@ -114,41 +113,54 @@ extract_if_exists() {
   fi
 }
 
-patch_grub_file() {
-  local file="$1"
+patch_with_awk() {
+  local file="$1" kind="$2" params="$3"
   local tmp="$file.tmp"
   cp -f "$file" "$tmp"
 
-  sed -E -i '
-    /^\s*linux(efi)?\s/ {
-      /ds=nocloud/ b
-      s/^( *linux(efi)?[[:space:]]+[^#\r\n]*?)\s*---(.*)$/\1 '"$BOOT_PARAMS"'---\3/
-      t
-      s/$/ '" $BOOT_PARAMS "'---/
-    }
-  ' "$tmp"
-
-  if ! grep -q "ds=nocloud-net" "$tmp"; then
-    return 1
+  if [[ "$kind" == "grub" ]]; then
+    awk -v P="$params" '
+      BEGIN{changed=0}
+      /^[ \t]*(linux|linuxefi)[ \t]/ {
+        if (index($0,"ds=nocloud")>0) {print; next}
+        ln=$0
+        p=index(ln,"---")
+        if (p>0) {
+          pre=substr(ln,1,p-1)
+          suf=substr(ln,p)
+          ln=pre" "P" "suf
+        } else {
+          ln=ln" "P" ---"
+        }
+        print ln
+        changed=1
+        next
+      }
+      {print}
+      END{ if (changed==0) exit 2 }
+    ' "$file" > "$tmp" || return 1
+  else
+    awk -v P="$params" '
+      BEGIN{changed=0}
+      /^[ \t]*append[ \t]/ {
+        if (index($0,"ds=nocloud")>0) {print; next}
+        ln=$0
+        p=index(ln,"---")
+        if (p>0) {
+          pre=substr(ln,1,p-1)
+          suf=substr(ln,p)
+          ln=pre" "P" "suf
+        } else {
+          ln=ln" "P" ---"
+        }
+        print ln
+        changed=1
+        next
+      }
+      {print}
+      END{ if (changed==0) exit 2 }
+    ' "$file" > "$tmp" || return 1
   fi
-
-  mv -f "$tmp" "$file"
-  return 0
-}
-
-patch_syslinux_file() {
-  local file="$1"
-  local tmp="$file.tmp"
-  cp -f "$file" "$tmp"
-
-  sed -E -i '
-    /^\s*append[[:space:]]/ {
-      /ds=nocloud/ b
-      s/^( *append[[:space:]]+[^#\r\n]*?)\s*---(.*)$/\1 '"$BOOT_PARAMS"'---\2/
-      t
-      s/$/ '" $BOOT_PARAMS "'---/
-    }
-  ' "$tmp"
 
   if ! grep -q "ds=nocloud-net" "$tmp"; then
     return 1
@@ -166,19 +178,15 @@ patch_kernel_params() {
     [[ -n "$iso_path" ]] || continue
     cfg_local="$WORKDIR/extract${iso_path}"
     if extract_if_exists "$iso_path" "$cfg_local"; then
-      if grep -Eq '^\s*(linux(efi)?|append)\s' "$cfg_local"; then
-        if grep -Eq '^\s*append\s' "$cfg_local"; then
+      if grep -Eq '^[[:space:]]*(linux(efi)?|append)[[:space:]]' "$cfg_local"; then
+        if grep -Eq '^[[:space:]]*append[[:space:]]' "$cfg_local"; then
           kind="syslinux"
-          if patch_syslinux_file "$cfg_local"; then
-            patched_any=true
-            log "Patched syslinux: $iso_path"
-          fi
         else
           kind="grub"
-          if patch_grub_file "$cfg_local"; then
-            patched_any=true
-            log "Patched grub: $iso_path"
-          fi
+        fi
+        if patch_with_awk "$cfg_local" "$kind" "$BOOT_PARAMS"; then
+          patched_any=true
+          log "Patched $kind: $iso_path"
         fi
       fi
     fi
