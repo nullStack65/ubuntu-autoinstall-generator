@@ -25,8 +25,18 @@ OPTIONS:
     --user-data <file>     Cloud-init user-data file to embed
     --meta-data <file>     Cloud-init meta-data file to embed
     --volume-label <name>  Custom volume label (default: ubuntu-autoinstall)
-    --dry-run              Show what would be done without creating ISO
-    --help                 Show this help message
+    --dry-run             Show what would be done without creating ISO
+    --help                Show this help message
+
+EXAMPLES:
+    # Basic autoinstall ISO (requires external cloud-init data)
+    $0 --source ubuntu-22.04-live-server-amd64.iso --destination ubuntu-auto.iso
+
+    # Embed cloud-init configuration
+    $0 --source ubuntu.iso --destination ubuntu-auto.iso --user-data user-data --meta-data meta-data
+
+    # Test what would be done
+    $0 --source ubuntu.iso --destination ubuntu-auto.iso --dry-run
 EOF
     exit "${1:-0}"
 }
@@ -45,12 +55,12 @@ while [[ $# -gt 0 ]]; do
         --user-data) USER_DATA="$2"; shift 2 ;;
         --meta-data) META_DATA="$2"; shift 2 ;;
         --volume-label) VOLUME_LABEL="$2"; shift 2 ;;
-        --dry-run) log "🧪 Dry run mode enabled"; exit 0 ;;
         --help) usage 0 ;;
         *) log "Unknown option: $1"; usage 1 ;;
     esac
 done
 
+# === Validation ===
 [[ -z "$SOURCE" || -z "$DEST" ]] && usage 1
 [[ ! -f "$SOURCE" ]] && die "Source ISO not found: $SOURCE"
 [[ -n "$USER_DATA" && ! -f "$USER_DATA" ]] && die "user-data file not found: $USER_DATA"
@@ -60,17 +70,18 @@ done
 TMPDIR=$(mktemp -d)
 log "📁 Created temp dir: $TMPDIR"
 
+# Extract ISO
 log "📦 Extracting ISO contents..."
 xorriso -osirrox on -indev "$SOURCE" -extract / "$TMPDIR" &>/dev/null
 chmod -R u+w "$TMPDIR"
 
-# Detect ISO format
-FORMAT="old"
-if [[ -d "$TMPDIR/[BOOT]" || -f "$TMPDIR/../BOOT/1-Boot-NoEmul.img" ]]; then
-    FORMAT="new"
-    mv "$TMPDIR/[BOOT]" "$TMPDIR/../BOOT" 2>/dev/null || true
+# Move boot partition images if they exist (Ubuntu 22.04+ format)
+if [[ -d "$TMPDIR/[BOOT]" ]]; then
+    mv "$TMPDIR/[BOOT]" "$TMPDIR/../BOOT"
+    log "📦 Found separate boot partitions (Ubuntu 22.04+ format)"
+else
+    log "📦 Using single partition format (Ubuntu 20.04 or earlier)"
 fi
-log "🔍 ISO format detected: $FORMAT"
 
 # === Validate Ubuntu ISO ===
 [[ ! -f "$TMPDIR/casper/vmlinuz" ]] && die "Not a Ubuntu live ISO (missing casper/vmlinuz)"
@@ -83,20 +94,33 @@ GRUB_CONFIGS=("grub.cfg" "loopback.cfg")
 for cfg in "${GRUB_CONFIGS[@]}"; do
     GRUB_PATH="$TMPDIR/boot/grub/$cfg"
     [[ ! -f "$GRUB_PATH" ]] && continue
+    
+    # Count matching menu entries before modification
     MATCHES=$(grep -c "menuentry.*Install Ubuntu" "$GRUB_PATH" || echo "0")
+    
+    # Add autoinstall parameter to Ubuntu install entries only
     sed -i '/menuentry.*Install Ubuntu/,/}/ s|linux[[:space:]]*/casper/vmlinuz|& autoinstall|' "$GRUB_PATH"
+    
     log "🧩 Added autoinstall to $MATCHES menu entries in $cfg"
 done
 
-# === Embed cloud-init ===
+# === Optionally embed cloud-init ===
 if [[ -n "$USER_DATA" ]]; then
     mkdir -p "$TMPDIR/nocloud"
     cp "$USER_DATA" "$TMPDIR/nocloud/user-data"
-    [[ -n "$META_DATA" ]] && cp "$META_DATA" "$TMPDIR/nocloud/meta-data" || touch "$TMPDIR/nocloud/meta-data"
+    if [[ -n "$META_DATA" ]]; then
+        cp "$META_DATA" "$TMPDIR/nocloud/meta-data"
+    else
+        touch "$TMPDIR/nocloud/meta-data"
+    fi
     log "📁 Embedded cloud-init data in /nocloud/"
+    
+    # Add cloud-init data source to GRUB configs
     for cfg in "${GRUB_CONFIGS[@]}"; do
         GRUB_PATH="$TMPDIR/boot/grub/$cfg"
         [[ ! -f "$GRUB_PATH" ]] && continue
+        
+        # Add nocloud data source to autoinstall entries
         sed -i '/menuentry.*Install Ubuntu/,/}/ s|autoinstall|& ds=nocloud\\;s=/cdrom/nocloud/|' "$GRUB_PATH"
         log "🔗 Added nocloud data source to $cfg"
     done
@@ -104,17 +128,15 @@ fi
 
 # === Repackage ISO ===
 log "🔨 Creating autoinstall ISO..."
+# Convert destination to absolute path before changing directories
 DEST_ABS=$(realpath "$DEST")
 log "📍 Output path: $DEST_ABS"
 
-EFI_IMG_PATH="$TMPDIR/boot/grub/efi.img"
-EFI_OPT=""
-[[ -f "$EFI_IMG_PATH" ]] && EFI_OPT="-e boot/grub/efi.img" || log "⚠️ EFI image not found, skipping -e boot/grub/efi.img"
-
-cd "$TMPDIR"
-if [[ "$FORMAT" == "new" ]]; then
+# Check if we have the BOOT directory with partition images (Ubuntu 22.04+ format)
+if [[ -d "$TMPDIR/../BOOT" ]]; then
     log "📦 Using Ubuntu 22.04+ format with separate boot partitions"
-    xorriso -as mkisofs -r \
+    cd "$TMPDIR"
+    if ! xorriso -as mkisofs -r \
         -V "$VOLUME_LABEL" \
         -o "$DEST_ABS" \
         --grub2-mbr ../BOOT/1-Boot-NoEmul.img \
@@ -129,16 +151,46 @@ if [[ "$FORMAT" == "new" ]]; then
         -eltorito-alt-boot \
         -e '--interval:appended_partition_2:::' \
         -no-emul-boot \
-        . || die "xorriso command failed"
+        . 2>/dev/null; then
+        log "❌ xorriso failed, trying without error suppression..."
+        xorriso -as mkisofs -r \
+            -V "$VOLUME_LABEL" \
+            -o "$DEST_ABS" \
+            --grub2-mbr ../BOOT/1-Boot-NoEmul.img \
+            -partition_offset 16 \
+            --mbr-force-bootable \
+            -append_partition 2 28732ac11ff8d211ba4b00a0c93ec93b ../BOOT/2-Boot-NoEmul.img \
+            -appended_part_as_gpt \
+            -iso_mbr_part_type a2a0d0ebe5b9334487c068b6b72699c7 \
+            -c '/boot.catalog' \
+            -b '/boot/grub/i386-pc/eltorito.img' \
+            -no-emul-boot -boot-load-size 4 -boot-info-table --grub2-boot-info \
+            -eltorito-alt-boot \
+            -e '--interval:appended_partition_2:::' \
+            -no-emul-boot \
+            .
+        die "xorriso command failed"
+    fi
 else
     log "📦 Using older Ubuntu format (pre-22.04)"
-    xorriso -as mkisofs -r \
-        -V "$VOLUME_LABEL" \
+    cd "$TMPDIR"
+    if ! xorriso -as mkisofs \
+        -r -V "$VOLUME_LABEL" \
         -J -joliet-long \
-        $EFI_OPT \
+        -e boot/grub/efi.img \
         -no-emul-boot \
         -isohybrid-gpt-basdat \
-        -o "$DEST_ABS" . || die "xorriso command failed"
+        -o "$DEST_ABS" . 2>/dev/null; then
+        log "❌ xorriso failed, trying without error suppression..."
+        xorriso -as mkisofs \
+            -r -V "$VOLUME_LABEL" \
+            -J -joliet-long \
+            -e boot/grub/efi.img \
+            -no-emul-boot \
+            -isohybrid-gpt-basdat \
+            -o "$DEST_ABS" .
+        die "xorriso command failed"
+    fi
 fi
 cd - &>/dev/null
 log "✅ Created autoinstall ISO: $DEST"
