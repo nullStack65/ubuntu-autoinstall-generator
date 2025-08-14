@@ -92,7 +92,7 @@ extract_iso() {
 }
 
 modify_grub_config() {
-    local autoinstall_params="autoinstall ds=nocloud-net\\;s=http://$PACKER_HTTP_IP:$PACKER_HTTP_PORT/"
+    local autoinstall_params="autoinstall ds=nocloud-net;s=http://$PACKER_HTTP_IP:$PACKER_HTTP_PORT/"
     local modified=false
     
     # Try multiple GRUB config locations
@@ -109,13 +109,23 @@ modify_grub_config() {
             # Backup original
             cp "$grub_cfg" "${grub_cfg}.bak"
             
-            # Modify kernel parameters in GRUB config - try multiple patterns
-            sed -i "s|linux\s*/casper/vmlinuz|linux /casper/vmlinuz $autoinstall_params|g" "$grub_cfg"
-            sed -i "s|linuxefi\s*/casper/vmlinuz|linuxefi /casper/vmlinuz $autoinstall_params|g" "$grub_cfg"
+            # More precise modifications for different kernel patterns
+            # Handle standard vmlinuz
+            sed -i "s|linux\s*/casper/vmlinuz\s*---\s*|linux /casper/vmlinuz $autoinstall_params --- |g" "$grub_cfg"
+            sed -i "s|linux\s*/casper/vmlinuz\s*$|linux /casper/vmlinuz $autoinstall_params|g" "$grub_cfg"
             
-            # Also handle cases where there might already be parameters
-            sed -i "s|vmlinuz\s*\$|vmlinuz $autoinstall_params|g" "$grub_cfg"
-            sed -i "s|vmlinuz file=/cdrom/preseed|vmlinuz $autoinstall_params file=/cdrom/preseed|g" "$grub_cfg"
+            # Handle HWE kernel
+            sed -i "s|linux\s*/casper/hwe-vmlinuz\s*---\s*|linux /casper/hwe-vmlinuz $autoinstall_params --- |g" "$grub_cfg"
+            sed -i "s|linux\s*/casper/hwe-vmlinuz\s*$|linux /casper/hwe-vmlinuz $autoinstall_params|g" "$grub_cfg"
+            
+            # Handle linuxefi variants
+            sed -i "s|linuxefi\s*/casper/vmlinuz\s*---\s*|linuxefi /casper/vmlinuz $autoinstall_params --- |g" "$grub_cfg"
+            sed -i "s|linuxefi\s*/casper/vmlinuz\s*$|linuxefi /casper/vmlinuz $autoinstall_params|g" "$grub_cfg"
+            sed -i "s|linuxefi\s*/casper/hwe-vmlinuz\s*---\s*|linuxefi /casper/hwe-vmlinuz $autoinstall_params --- |g" "$grub_cfg"
+            sed -i "s|linuxefi\s*/casper/hwe-vmlinuz\s*$|linuxefi /casper/hwe-vmlinuz $autoinstall_params|g" "$grub_cfg"
+            
+            # Clean up any double spaces that might have been created
+            sed -i 's|  *| |g' "$grub_cfg"
             
             modified=true
             log "Added autoinstall parameters to $(basename "$grub_cfg")"
@@ -231,7 +241,7 @@ Usage: $0 [OPTIONS] <iso_file>
 Options:
     --source <file>         Source ISO file
     --destination <file>    Output ISO file (default: <source>-autoinstall.iso)
-    --validate-only         Only validate the ISO, don't create new ISO output
+    --validate-only         Only validate the ISO, don't create output
     --http-server <ip>      Packer HTTP server IP (default: 10.0.2.2)
     --http-port <port>      Packer HTTP server port (default: 8080)
     --help                  Show this help message
