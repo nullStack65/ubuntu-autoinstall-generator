@@ -106,7 +106,7 @@ build_output() {
             xorriso -as mkisofs -o "$DEST" \
                 -iso-level 3 \
                 -full-iso9660-filenames \
-                -volid "Ubuntu-Autoinstall" \
+                -volid "Ubuntu_Autoinstall" \
                 -eltorito-boot boot/grub/i386-pc/eltorito.img \
                 -no-emul-boot -boot-load-size 4 -boot-info-table \
                 -eltorito-alt-boot -e boot/grub/efi.img \
