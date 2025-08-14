@@ -227,7 +227,11 @@ class UbuntuISOBuilder:
 
     def detect_boot_structure(self) -> Tuple[bool, bool]:
         """Detect if ISO has UEFI and/or BIOS boot support."""
-        has_uefi = (self.iso_dir / 'boot' / 'grub' / 'efi.img').exists()
+        # Ubuntu 22.04+ uses EFI/boot/bootx64.efi instead of boot/grub/efi.img
+        has_uefi = (
+            (self.iso_dir / 'boot' / 'grub' / 'efi.img').exists() or
+            (self.iso_dir / 'EFI' / 'boot' / 'bootx64.efi').exists()
+        )
         has_bios = (self.iso_dir / 'isolinux' / 'isolinux.bin').exists()
         
         logger.info(f"Boot structure - UEFI: {'✓' if has_uefi else '✗'}, BIOS: {'✓' if has_bios else '✗'}")
@@ -240,7 +244,7 @@ class UbuntuISOBuilder:
         volume_label = self.get_volume_label()
         has_uefi, has_bios = self.detect_boot_structure()
         
-        # Build xorriso command
+        # Try to copy the original ISO's boot structure as closely as possible
         cmd = [
             'xorriso', '-as', 'mkisofs',
             '-r', '-V', volume_label,
@@ -249,52 +253,44 @@ class UbuntuISOBuilder:
             '-cache-inodes'
         ]
         
-        # Add boot configuration based on detected structure
-        if has_bios and has_uefi:
-            # Hybrid boot
-            logger.info("Creating hybrid UEFI/BIOS ISO...")
-            cmd.extend([
-                '-b', 'isolinux/isolinux.bin',
-                '-c', 'isolinux/boot.cat',
-                '-no-emul-boot',
-                '-boot-load-size', '4',
-                '-boot-info-table',
-                '-eltorito-alt-boot',
-                '-e', 'boot/grub/efi.img',
-                '-no-emul-boot',
-                '-isohybrid-gpt-basdat'
-            ])
-        elif has_uefi:
-            # UEFI only
-            logger.info("Creating UEFI-only ISO...")
+        if has_uefi:
+            # Ubuntu 22.04 uses bootx64.efi for EFI boot
+            logger.info("Creating UEFI ISO...")
             cmd.extend([
                 '-eltorito-alt-boot',
-                '-e', 'boot/grub/efi.img',
+                '-e', 'EFI/boot/bootx64.efi', 
                 '-no-emul-boot',
                 '-isohybrid-gpt-basdat'
-            ])
-        elif has_bios:
-            # BIOS only
-            logger.info("Creating BIOS-only ISO...")
-            cmd.extend([
-                '-b', 'isolinux/isolinux.bin',
-                '-c', 'isolinux/boot.cat',
-                '-no-emul-boot',
-                '-boot-load-size', '4',
-                '-boot-info-table'
             ])
         else:
-            # Fallback - basic ISO
-            logger.warning("No recognized boot structure, creating basic ISO...")
+            logger.warning("No EFI boot detected, creating basic ISO...")
             
         cmd.append(str(self.iso_dir))
         
         try:
+            logger.info("Creating ISO with detected boot structure...")
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
             
             if result.returncode != 0:
-                raise RuntimeError(f"ISO creation failed: {result.stderr}")
+                logger.warning(f"First attempt failed: {result.stderr}")
                 
+                # Fallback: try the most basic approach that should work
+                logger.info("Trying fallback approach...")
+                cmd_fallback = [
+                    'xorriso', '-as', 'mkisofs',
+                    '-r', '-V', volume_label,
+                    '-o', str(self.output_iso),
+                    '-eltorito-alt-boot',
+                    '-e', 'EFI/boot/bootx64.efi',
+                    '-no-emul-boot',
+                    str(self.iso_dir)
+                ]
+                
+                result = subprocess.run(cmd_fallback, capture_output=True, text=True, timeout=600)
+                
+            if result.returncode != 0:
+                raise RuntimeError(f"ISO creation failed: {result.stderr}")
+                    
             # Verify output
             if not self.output_iso.exists():
                 raise RuntimeError("Output ISO was not created")
