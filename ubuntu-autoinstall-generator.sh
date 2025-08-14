@@ -81,13 +81,6 @@ inject_kernel_args() {
     else
         error "Could not find grub.cfg to inject kernel parameters"
     fi
-
-    xorriso -as mkisofs -o "$DEST" \
-        -isohybrid-mbr "$WORKDIR/iso/isolinux/isohdpfx.bin" \
-        -c isolinux/boot.cat -b isolinux/isolinux.bin \
-        -no-emul-boot -boot-load-size 4 -boot-info-table \
-        -eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot \
-        -isohybrid-gpt-basdat -V "Ubuntu Autoinstall" "$WORKDIR/iso"
 }
 
 validate_iso() {
@@ -110,11 +103,20 @@ build_output() {
     case "$FORMAT" in
         "Live Server")
             inject_kernel_args
-            ;;
-        "GRUB EFI")
-            cp "$ISO" "$DEST"
+            xorriso -as mkisofs -o "$DEST" \
+                -iso-level 3 \
+                -full-iso9660-filenames \
+                -volid "Ubuntu-Autoinstall" \
+                -eltorito-boot boot/grub/i386-pc/eltorito.img \
+                -no-emul-boot -boot-load-size 4 -boot-info-table \
+                -eltorito-alt-boot -e boot/grub/efi.img \
+                -no-emul-boot -isohybrid-gpt-basdat \
+                "$WORKDIR/iso"
             ;;
         "Legacy Boot")
+            cp "$ISO" "$DEST"
+            ;;
+        "GRUB EFI")
             cp "$ISO" "$DEST"
             ;;
         *)
