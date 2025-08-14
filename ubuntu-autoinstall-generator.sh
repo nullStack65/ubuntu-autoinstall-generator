@@ -5,8 +5,32 @@ set -e
 # === CONFIG ===
 WORKDIR="./iso_work"
 OUTPUT="./output"
-ISO="$1"
+ISO=""
+DEST=""
 VALIDATE_ONLY=false
+
+# === ARG PARSING ===
+parse_args() {
+    while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+            --source) ISO="$2"; shift ;;
+            --destination) DEST="$2"; shift ;;
+            --validate-only) VALIDATE_ONLY=true ;;
+            *.iso) ISO="$1" ;;  # fallback for positional ISO
+            *) error "Unknown argument: $1" ;;
+        esac
+        shift
+    done
+
+    [[ -f "$ISO" ]] || error "ISO file not found: $ISO"
+
+    # Default destination if not set
+    if [[ -z "$DEST" ]]; then
+        BASENAME=$(basename "$ISO" .iso)
+        DEST="${BASENAME}-autoinstall.iso"
+    fi
+}
+
 
 # === FUNCTIONS ===
 
@@ -23,19 +47,6 @@ check_dependencies() {
     for cmd in xorriso grep awk; do
         command -v $cmd >/dev/null || error "Missing dependency: $cmd"
     done
-}
-
-parse_args() {
-    while [[ "$#" -gt 0 ]]; do
-        case "$1" in
-            --validate-only) VALIDATE_ONLY=true ;;
-            *.iso) ISO="$1" ;;
-            *) error "Unknown argument: $1" ;;
-        esac
-        shift
-    done
-
-    [[ -f "$ISO" ]] || error "ISO file not found: $ISO"
 }
 
 extract_version() {
