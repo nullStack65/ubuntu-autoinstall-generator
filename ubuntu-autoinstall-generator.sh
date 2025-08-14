@@ -101,19 +101,23 @@ if [ -f "$EFI_IMG" ]; then
     umount "$WORK_DIR/efi_mount"
 fi
 
-# 4. Rebuild ISO
+# 4. Rebuild ISO (GRUB-only, BIOS+UEFI)
 echo "[GENERATOR] Rebuilding ISO..."
 xorriso -as mkisofs \
   -r -V "Ubuntu-Autoinstall" \
   -o "$DESTINATION" \
-  -J -l -cache-inodes \
-  -isohybrid-mbr "$WORK_DIR/edit/isolinux/isohdpfx.bin" \
-  -b isolinux/isolinux.bin \
-     -c isolinux/boot.cat \
-     -no-emul-boot -boot-load-size 4 -boot-info-table \
+  -J -l \
+  -isohybrid-gpt-basdat \
+  -isohybrid-apm-hfsplus \
+  -partition_offset 16 \
+  --grub2-mbr "$WORK_DIR/edit/boot/grub/i386-pc/boot_hybrid.img" \
+  -append_partition 2 0xef "$WORK_DIR/edit/boot/grub/efi.img" \
+  -appended_part_as_gpt \
+  -eltorito-boot boot/grub/i386-pc/eltorito.img \
+       -no-emul-boot -boot-load-size 4 -boot-info-table \
+  -eltorito-catalog boot/grub/boot.cat \
   -eltorito-alt-boot \
-  -e EFI/boot/bootx64.efi \
-     -no-emul-boot \
+  -e --interval:appended_partition_2:: \
+       -no-emul-boot \
   "$WORK_DIR/edit"
-
 echo "[GENERATOR] Done! ISO saved as $DESTINATION"
