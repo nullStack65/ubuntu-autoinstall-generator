@@ -28,7 +28,7 @@ class UbuntuISOBuilder:
     def __init__(self, source_iso: Path, output_iso: Optional[Path] = None,
                  http_ip: str = "10.0.2.2", http_port: int = 8080):
         self.source_iso = Path(source_iso)
-        self.output_iso = output_iso or Path(f"{self.source_iso.stem}-autoinstall.iso")
+        self.output_iso = Path(output_iso) if output_iso else Path(f"{self.source_iso.stem}-autoinstall.iso")
         self.http_ip = http_ip
         self.http_port = http_port
         self.work_dir = None
