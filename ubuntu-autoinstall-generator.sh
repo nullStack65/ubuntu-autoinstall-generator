@@ -114,7 +114,7 @@ xorriso -as mkisofs \
        -no-emul-boot -boot-load-size 4 -boot-info-table \
   -eltorito-catalog boot/grub/boot.cat \
   -eltorito-alt-boot \
-  -e boot/grub/efi.img \
+  -e EFI/boot/bootx64.efi \
        -no-emul-boot \
   -isohybrid-apm-hfsplus \
   "$WORK_DIR/edit"
