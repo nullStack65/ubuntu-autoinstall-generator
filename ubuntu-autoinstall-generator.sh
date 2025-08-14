@@ -33,8 +33,8 @@ parse_args() {
             --source) ISO="$2"; shift ;;
             --destination) DEST="$2"; shift ;;
             --validate-only) VALIDATE_ONLY=true ;;
-            --packer-ip) PACKER_HTTP_IP="$2"; shift ;;
-            --packer-port) PACKER_HTTP_PORT="$2"; shift ;;
+            --http-server) PACKER_HTTP_IP="$2"; shift ;;
+            --http-port) PACKER_HTTP_PORT="$2"; shift ;;
             *.iso) ISO="$1" ;;
             *) error "Unknown argument: $1" ;;
         esac
@@ -224,8 +224,8 @@ Options:
     --source <file>         Source ISO file
     --destination <file>    Output ISO file (default: <source>-autoinstall.iso)
     --validate-only         Only validate the ISO, don't create output
-    --packer-ip <ip>        Packer HTTP server IP (default: 10.0.2.2)
-    --packer-port <port>    Packer HTTP server port (default: 8080)
+    --http-server <ip>      Packer HTTP server IP (default: 10.0.2.2)
+    --http-port <port>      Packer HTTP server port (default: 8080)
     --help                  Show this help message
 
 Environment Variables:
@@ -235,7 +235,7 @@ Environment Variables:
 Examples:
     $0 ubuntu-20.04.6-live-server-amd64.iso
     $0 --source ubuntu.iso --destination custom-autoinstall.iso
-    $0 --packer-ip 192.168.1.100 --packer-port 8000 ubuntu.iso
+    $0 --http-server 192.168.1.100 --http-port 8000 ubuntu.iso
     PACKER_HTTP_IP=10.0.0.1 $0 ubuntu.iso
 EOF
 }
